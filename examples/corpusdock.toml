@@ -1,0 +1,16 @@
+[corpus]
+name = "my-local-corpus"
+data_dir = "data"
+
+[embedding]
+# The default implementation must stay local. Hosted providers are explicit opt-in.
+provider = "local"
+
+[retrieval]
+full_text = true
+# Semantic retrieval is a future local-model phase.
+semantic = false
+max_results = 10
+
+[privacy]
+allow_cloud_content = false

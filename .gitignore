@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+build/
+dist/
+
+# Tool state and local databases
+.corpusdock/
+/DOCS/
+docs/
+_scratch/
+data/originals/
+data/extracted/
+data/indexes/
+data/postgres/
+
+# Models and editor state
+models/
+.vscode/
+.idea/
+
+# Environment secrets
+.env
+.env.*
+!.env.example

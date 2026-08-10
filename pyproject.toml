@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "corpusdock"
+version = "0.2.0"
+description = "Citation-aware local document ingestion and retrieval for AI agents."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "CorpusDock contributors" },
+]
+keywords = ["citation", "documents", "ingestion", "rag", "retrieval", "mcp"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "pypdf>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+local-models = [
+    "wtpsplit-lite>=0.2,<1",
+]
+
+[project.scripts]
+corpusdock = "corpusdock.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
