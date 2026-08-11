@@ -1,0 +1,3 @@
+Battery Storage Standard
+Rechargeable lithium packs are stored near half charge in a cool, dry cabinet.
+Damaged cells are isolated in a fire-resistant container.

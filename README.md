@@ -12,8 +12,10 @@ CorpusDock registers, extracts, sentence-chunks, and locally indexes `.txt`, `.p
 `.epub`, `.mobi`, and `.docx` files into versioned local artifacts. Every search hit
 returns exact chunk text, stable evidence and chunk IDs, durable source locators, and
 extraction coverage. PDF ingestion is text-layer only; scanned pages are reported as
-unresolved and are never inferred from images. A versioned retrieval evaluator now
-measures the exact-search baseline; semantic retrieval is not implemented yet.
+unresolved and are never inferred from images. A versioned evaluator compares exact
+search with provider-neutral, local semantic retrieval while preserving the identical
+evidence and citation contract. Persistent vector indexing and hybrid search are the
+next implementation stage.
 
 Format extraction does not invoke Calibre, LibreOffice, Pandoc, or another system
 converter. TXT, EPUB, DOCX, and unencrypted MOBI parsing is implemented in the
@@ -24,7 +26,7 @@ package. DRM-protected MOBI files and unknown compression types fail explicitly.
 ## Install and ingest
 
 ```bash
-uv sync --all-extras
+uv sync --extra local-models
 corpusdock init .
 corpusdock ingest ./documents
 corpusdock index
@@ -95,8 +97,8 @@ live source-verification rate, search-only latency, SQLite index size, and proce
 peak RSS where the operating system exposes it. Reports contain queries and stable
 source/evidence IDs, but never retrieved excerpts, citations, or source paths.
 
-The project-authored generic benchmark deliberately includes a paraphrase that exact
-lexical search cannot retrieve. Run the reproducible baseline with:
+The project-authored generic v1 benchmark deliberately includes a paraphrase that
+exact lexical search cannot retrieve. Run the reproducible baseline with:
 
 ```bash
 benchmark_project="$(mktemp -d)"
@@ -113,6 +115,48 @@ index. Live evidence verification is enabled by default; `--no-verify` measures 
 retrieval and locator judgments. See the
 [benchmark contract](benchmarks/retrieval-v1/README.md) for the schema and expected
 lexical baseline.
+
+### Local semantic evaluation
+
+The v2 benchmark adds generic English paraphrases, same-language multilingual
+queries, cross-lingual queries, and overlapping distractors. CorpusDock's measured
+quality-first default is `Qwen/Qwen3-Embedding-0.6B` at its full 1024 dimensions.
+The semantic adapter is optional, refuses repository Python, resolves an immutable
+model revision, and is local-only unless a model download is explicitly permitted.
+
+Install a CPU-only semantic runtime and run the first evaluation:
+
+```bash
+uv pip install --torch-backend cpu -e '.[semantic]'
+semantic_project="$(mktemp -d)"
+corpusdock init "$semantic_project"
+corpusdock ingest benchmarks/retrieval-v2/corpus \
+  --project "$semantic_project" --sentence-processor rule
+corpusdock index --project "$semantic_project"
+corpusdock eval benchmarks/retrieval-v2/judgments.json \
+  --project "$semantic_project" --limit 3 --retrieval semantic \
+  --allow-model-download --device cpu --no-verify --json
+```
+
+Only public model files are fetched. CorpusDock does not upload document text; after
+the model is cached, omit `--allow-model-download` for a network-free run. A local
+model directory can be passed with `--embedding-model /path/to/model`.
+
+On supported NVIDIA hardware, install an automatically selected PyTorch CUDA wheel
+and switch inference to the GPU:
+
+```bash
+uv pip install --torch-backend auto -e '.[semantic]'
+corpusdock eval benchmarks/retrieval-v2/judgments.json \
+  --project "$semantic_project" --limit 3 --retrieval semantic \
+  --device cuda --no-verify --json
+```
+
+Semantic evaluation currently builds an ephemeral in-memory matrix; it does not yet
+change `corpusdock search` or persist vectors. See the
+[multilingual benchmark and model decision](benchmarks/retrieval-v2/README.md) for
+exact revisions, CPU/RAM/VRAM measurements, CUDA throughput, limitations, and the
+reproducible lexical control.
 
 ## Principles
 

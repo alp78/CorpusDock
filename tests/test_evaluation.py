@@ -25,11 +25,14 @@ from corpusdock.retrieval import SQLiteSearchBackend, build_search_index
 
 TIMESTAMP = "2026-08-11T12:00:00Z"
 BENCHMARK_ROOT = Path(__file__).parents[1] / "benchmarks" / "retrieval-v1"
+SEMANTIC_BENCHMARK_ROOT = Path(__file__).parents[1] / "benchmarks" / "retrieval-v2"
 
 
-def _build_benchmark(project_root: Path) -> set[str]:
+def _build_benchmark(
+    project_root: Path, benchmark_root: Path = BENCHMARK_ROOT
+) -> set[str]:
     store = ManifestStore(project_root, now=lambda: TIMESTAMP)
-    registrations = store.register(sorted((BENCHMARK_ROOT / "corpus").glob("*.txt")))
+    registrations = store.register(sorted((benchmark_root / "corpus").glob("*.txt")))
     source_ids: set[str] = set()
     for registration in registrations:
         source = registration.source
@@ -108,6 +111,41 @@ def test_generic_benchmark_measures_the_lexical_baseline_without_content(
     assert '"excerpt"' not in serialized
     assert '"source_path"' not in serialized
     assert all("citation" not in case for case in payload["cases"])
+
+
+def test_multilingual_semantic_gate_has_a_deterministic_lexical_control(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    registered_source_ids = _build_benchmark(project_root, SEMANTIC_BENCHMARK_ROOT)
+    dataset = load_evaluation_dataset(SEMANTIC_BENCHMARK_ROOT / "judgments.json")
+    judged_source_ids = {
+        judgment.source_id for case in dataset.cases for judgment in case.relevance
+    }
+
+    report = evaluate_retrieval(
+        dataset,
+        SQLiteSearchBackend(project_root),
+        limit=3,
+        verify=False,
+    )
+
+    assert judged_source_ids < registered_source_ids
+    assert len(registered_source_ids) == 15
+    assert len(judged_source_ids) == 14
+    assert report.summary.cases == 29
+    assert report.summary.relevant_sources == 30
+    assert report.summary.matched_relevant_sources == 6
+    assert report.summary.recall_at_k == 0.2
+    assert report.summary.mean_reciprocal_rank_at_k == pytest.approx(5 / 29, abs=1e-6)
+    categories = dict(report.by_category)
+    assert categories["lexical"].recall_at_k == 1.0
+    assert categories["phrase"].recall_at_k == 1.0
+    assert categories["citation"].recall_at_k == 1.0
+    assert categories["cross_source"].recall_at_k == 1.0
+    assert categories["paraphrase_en"].recall_at_k == 0.0
+    assert categories["multilingual_same_language"].recall_at_k == 0.0
+    assert categories["cross_lingual"].recall_at_k == 0.0
 
 
 def test_eval_cli_emits_the_versioned_non_content_report(
@@ -236,4 +274,18 @@ def test_evaluation_rejects_a_judged_source_missing_from_the_index(
         evaluate_retrieval(
             load_evaluation_dataset(dataset_path),
             SQLiteSearchBackend(project_root),
+        )
+
+
+def test_evaluation_rejects_retrieval_metadata_that_replaces_contract_fields(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _build_benchmark(project_root)
+
+    with pytest.raises(EvaluationError, match="cannot replace report field.*mode"):
+        evaluate_retrieval(
+            load_evaluation_dataset(BENCHMARK_ROOT / "judgments.json"),
+            SQLiteSearchBackend(project_root),
+            retrieval_metadata={"mode": "untrusted", "embedding": {}},
         )

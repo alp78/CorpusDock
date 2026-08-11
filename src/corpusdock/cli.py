@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from dataclasses import replace
 import json
 from pathlib import Path
 import sys
@@ -30,6 +31,15 @@ from corpusdock.evaluation import (
     EvaluationError,
     evaluate_retrieval,
     load_evaluation_dataset,
+)
+from corpusdock.embeddings import (
+    DEFAULT_EMBEDDING_BATCH_SIZE,
+    DEFAULT_EMBEDDING_MODEL,
+    MAX_EMBEDDING_BATCH_SIZE,
+    EmbeddingError,
+    InMemorySemanticSearchBackend,
+    SentenceTransformersEmbeddingProvider,
+    model_cache_dir_for,
 )
 from corpusdock.manifest import (
     ManifestError,
@@ -174,6 +184,52 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Results per case from 1 to {MAX_SEARCH_LIMIT} (default: {DEFAULT_SEARCH_LIMIT}).",
     )
     eval_parser.add_argument(
+        "--retrieval",
+        choices=("lexical", "semantic"),
+        default="lexical",
+        help="Retrieval path to evaluate (default: lexical).",
+    )
+    eval_parser.add_argument(
+        "--embedding-model",
+        default=DEFAULT_EMBEDDING_MODEL,
+        help=(
+            "Local directory or namespace/model ID for semantic evaluation "
+            f"(default: {DEFAULT_EMBEDDING_MODEL})."
+        ),
+    )
+    eval_parser.add_argument(
+        "--model-revision",
+        help="Optional model commit, tag, or branch; the resolved revision is reported.",
+    )
+    eval_parser.add_argument(
+        "--model-cache",
+        help="Model cache directory (default: the project's ignored model cache).",
+    )
+    eval_parser.add_argument(
+        "--allow-model-download",
+        action="store_true",
+        help="Explicitly permit downloading public model weights; document text is never uploaded.",
+    )
+    eval_parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Local inference device understood by the runtime (default: cpu).",
+    )
+    eval_parser.add_argument(
+        "--embedding-batch-size",
+        type=int,
+        default=DEFAULT_EMBEDDING_BATCH_SIZE,
+        help=(
+            "Local embedding batch size from 1 to "
+            f"{MAX_EMBEDDING_BATCH_SIZE} (default: {DEFAULT_EMBEDDING_BATCH_SIZE})."
+        ),
+    )
+    eval_parser.add_argument(
+        "--truncate-dimension",
+        type=int,
+        help="Optional output dimension for a model trained to support truncation.",
+    )
+    eval_parser.add_argument(
         "--no-verify",
         action="store_true",
         help="Skip live source-byte verification of returned evidence.",
@@ -291,16 +347,40 @@ def _search_sources(args: argparse.Namespace) -> int:
 def _evaluate_retrieval(args: argparse.Namespace) -> int:
     project_root = _resolve_project_root(args.project)
     dataset = load_evaluation_dataset(args.dataset)
-    backend = SQLiteSearchBackend(project_root)
+    exact_backend = SQLiteSearchBackend(project_root)
+    if args.retrieval == "semantic":
+        provider = SentenceTransformersEmbeddingProvider(
+            args.embedding_model,
+            revision=args.model_revision,
+            cache_dir=args.model_cache or model_cache_dir_for(project_root),
+            allow_download=args.allow_model_download,
+            device=args.device,
+            batch_size=args.embedding_batch_size,
+            truncate_dimension=args.truncate_dimension,
+            show_progress=not args.json,
+        )
+        backend = InMemorySemanticSearchBackend(exact_backend, provider)
+        backend_name = "in_memory_dense"
+        retrieval_metadata = backend.evaluation_metadata()
+    else:
+        backend = exact_backend
+        backend_name = "sqlite_fts5"
+        retrieval_metadata = None
     report = evaluate_retrieval(
         dataset,
         backend,
         limit=args.limit,
         verify=not args.no_verify,
-        index_size_bytes=backend.path.stat().st_size
-        if backend.path.is_file()
+        backend_name=backend_name,
+        retrieval_mode=args.retrieval,
+        index_size_bytes=exact_backend.path.stat().st_size
+        if exact_backend.path.is_file()
         else None,
+        retrieval_metadata=retrieval_metadata,
     )
+    if retrieval_metadata is not None:
+        retrieval_metadata = backend.evaluation_metadata()
+        report = replace(report, retrieval_metadata=retrieval_metadata)
     if args.json:
         print(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
@@ -325,6 +405,23 @@ def _evaluate_retrieval(args: argparse.Namespace) -> int:
         print(f"Index size: {report.index_size_bytes} bytes")
     if report.process_peak_rss_bytes is not None:
         print(f"Process peak RSS: {report.process_peak_rss_bytes} bytes")
+    if retrieval_metadata is not None:
+        embedding = retrieval_metadata["embedding"]
+        semantic_index = retrieval_metadata["semantic_index"]
+        print(
+            "Embedding: "
+            f"{embedding['model_id']} @ {embedding['model_revision']}; "
+            f"{embedding['dimension']} dimensions on {embedding['device']}"
+        )
+        print(
+            "Semantic build: "
+            f"{semantic_index['documents']} documents in "
+            f"{semantic_index['document_embedding_ms']:.3f} ms; "
+            f"{semantic_index['vector_size_bytes']} vector bytes"
+        )
+        accelerator_memory = embedding["accelerator_peak_memory_allocated_bytes"]
+        if accelerator_memory is not None:
+            print(f"Accelerator peak allocated memory: {accelerator_memory} bytes")
     print("Categories:")
     for category, metrics in report.by_category:
         print(
@@ -622,6 +719,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ChunkingError,
         RetrievalError,
         EvaluationError,
+        EmbeddingError,
     ) as error:
         print(f"corpusdock: error: {error}", file=sys.stderr)
         return 1

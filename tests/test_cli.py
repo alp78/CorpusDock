@@ -6,6 +6,7 @@ import json
 import pytest
 
 from corpusdock.cli import build_parser, main
+from corpusdock.embeddings import DEFAULT_EMBEDDING_MODEL
 
 
 def test_search_parser_accepts_json_output() -> None:
@@ -30,6 +31,37 @@ def test_eval_parser_accepts_local_baseline_options() -> None:
     assert args.json is True
     assert args.limit == 5
     assert args.no_verify is True
+    assert args.embedding_model == DEFAULT_EMBEDDING_MODEL
+
+
+def test_eval_parser_accepts_explicit_local_semantic_options() -> None:
+    args = build_parser().parse_args(
+        [
+            "eval",
+            "judgments.json",
+            "--retrieval",
+            "semantic",
+            "--embedding-model",
+            "Qwen/Qwen3-Embedding-0.6B",
+            "--model-revision",
+            "0123456789abcdef",
+            "--allow-model-download",
+            "--device",
+            "cuda",
+            "--embedding-batch-size",
+            "8",
+            "--truncate-dimension",
+            "256",
+        ]
+    )
+
+    assert args.retrieval == "semantic"
+    assert args.embedding_model == "Qwen/Qwen3-Embedding-0.6B"
+    assert args.model_revision == "0123456789abcdef"
+    assert args.allow_model_download is True
+    assert args.device == "cuda"
+    assert args.embedding_batch_size == 8
+    assert args.truncate_dimension == 256
 
 
 def test_ingest_parser_accepts_multiple_text_sources() -> None:

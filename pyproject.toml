@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "corpusdock"
-version = "0.3.0"
+version = "0.4.0"
 description = "Citation-aware local document ingestion and retrieval for AI agents."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,6 +29,9 @@ dependencies = [
 dev = ["pytest>=8.0"]
 local-models = [
     "wtpsplit-lite>=0.2,<1",
+]
+semantic = [
+    "sentence-transformers>=5.4,<6",
 ]
 
 [project.scripts]

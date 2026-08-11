@@ -1,0 +1,3 @@
+Handleiding voor archiefdigitalisering
+Het digitale moederbestand wordt als ongecomprimeerde TIFF op zeshonderd punten per inch gescand.
+De controlesom van elk bestand wordt maandelijks gecontroleerd.

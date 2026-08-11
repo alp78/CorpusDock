@@ -35,6 +35,15 @@ MAX_EVALUATION_CASES = 10_000
 _SOURCE_ID_PATTERN = re.compile(r"src-[0-9a-f]{64}")
 _CASE_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
 _MATCH_MODES = {"all", "any", "phrase"}
+_RETRIEVAL_METADATA_RESERVED = {
+    "backend",
+    "mode",
+    "limit",
+    "verification_enabled",
+    "latency_scope",
+    "index",
+    "process_peak_rss_bytes",
+}
 _LOCATOR_FIELD_TYPES: dict[str, type[str] | type[int]] = {
     "locator_type": str,
     "label": str,
@@ -241,9 +250,27 @@ class EvaluationReport:
     summary: MetricSummary
     by_category: tuple[tuple[str, MetricSummary], ...]
     cases: tuple[CaseEvaluation, ...]
+    retrieval_metadata: Mapping[str, Any] | None = None
     schema_version: int = EVALUATION_REPORT_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
+        retrieval: dict[str, Any] = {
+            "backend": self.backend_name,
+            "mode": self.retrieval_mode,
+            "limit": self.limit,
+            "verification_enabled": self.verification_enabled,
+            "latency_scope": "search_only",
+            "index": {
+                "built_at": self.index_built_at,
+                "sources": self.indexed_sources,
+                "chunks": self.indexed_chunks,
+                "partial_sources": self.partial_sources,
+                "size_bytes": self.index_size_bytes,
+            },
+            "process_peak_rss_bytes": self.process_peak_rss_bytes,
+        }
+        if self.retrieval_metadata is not None:
+            retrieval.update(self.retrieval_metadata)
         return {
             "schema_version": self.schema_version,
             "corpusdock_version": __version__,
@@ -255,21 +282,7 @@ class EvaluationReport:
                 "sha256": self.dataset.sha256,
                 "cases": len(self.dataset.cases),
             },
-            "retrieval": {
-                "backend": self.backend_name,
-                "mode": self.retrieval_mode,
-                "limit": self.limit,
-                "verification_enabled": self.verification_enabled,
-                "latency_scope": "search_only",
-                "index": {
-                    "built_at": self.index_built_at,
-                    "sources": self.indexed_sources,
-                    "chunks": self.indexed_chunks,
-                    "partial_sources": self.partial_sources,
-                    "size_bytes": self.index_size_bytes,
-                },
-                "process_peak_rss_bytes": self.process_peak_rss_bytes,
-            },
+            "retrieval": retrieval,
             "summary": self.summary.to_dict(),
             "by_category": {
                 category: metrics.to_dict() for category, metrics in self.by_category
@@ -374,6 +387,7 @@ def evaluate_retrieval(
     backend_name: str = "sqlite_fts5",
     retrieval_mode: str = "lexical",
     index_size_bytes: int | None = None,
+    retrieval_metadata: Mapping[str, Any] | None = None,
     clock: Callable[[], float] = perf_counter,
     now: Callable[[], str] = utc_now,
 ) -> EvaluationReport:
@@ -404,6 +418,16 @@ def evaluate_retrieval(
             "evaluation_index_size_invalid",
             "Index size must be a non-negative integer when supplied.",
         )
+
+    if retrieval_metadata is not None:
+        reserved = sorted(set(retrieval_metadata) & _RETRIEVAL_METADATA_RESERVED)
+        if reserved:
+            raise EvaluationError(
+                "evaluation_retrieval_metadata_invalid",
+                "Retrieval metadata cannot replace report field(s): "
+                + ", ".join(reserved)
+                + ".",
+            )
 
     timed_responses: list[tuple[EvaluationCase, SearchResponse, float]] = []
     index_signature: tuple[str, int, int, int] | None = None
@@ -536,6 +560,9 @@ def evaluate_retrieval(
             for category in categories
         ),
         cases=completed_cases,
+        retrieval_metadata=dict(retrieval_metadata)
+        if retrieval_metadata is not None
+        else None,
     )
 
 

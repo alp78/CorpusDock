@@ -115,6 +115,19 @@ class SearchResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class SearchCorpusSnapshot:
+    """A validated point-in-time view of exact evidence for derived retrieval."""
+
+    evidence: tuple[EvidenceResult, ...]
+    source_ids: tuple[str, ...]
+    index_built_at: str
+    indexed_sources: int
+    indexed_chunks: int
+    partial_sources: int
+    index_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
 class VerificationReport:
     """Live verification of indexed evidence against an immutable original."""
 
@@ -412,6 +425,77 @@ class SQLiteSearchBackend:
                 "anchor-locators-confirmed",
             ),
         )
+
+    def corpus_snapshot(self) -> SearchCorpusSnapshot:
+        """Return validated exact evidence for a local derived retriever."""
+
+        try:
+            with closing(self._connect()) as connection:
+                metadata = _read_index_metadata(connection)
+                _assert_index_current(connection, self.project_root, metadata)
+                rows = connection.execute(_SNAPSHOT_SQL).fetchall()
+                evidence = tuple(_evidence_from_row(row) for row in rows)
+                source_ids = tuple(
+                    str(row["source_id"])
+                    for row in connection.execute(
+                        "SELECT source_id FROM sources ORDER BY source_id"
+                    ).fetchall()
+                )
+                if len(evidence) != int(metadata["chunks"]):
+                    raise RetrievalError(
+                        "index_snapshot_incomplete",
+                        "The search index did not return every indexed chunk.",
+                    )
+                return SearchCorpusSnapshot(
+                    evidence=evidence,
+                    source_ids=source_ids,
+                    index_built_at=metadata["built_at"],
+                    indexed_sources=int(metadata["sources"]),
+                    indexed_chunks=int(metadata["chunks"]),
+                    partial_sources=int(metadata["partial_sources"]),
+                    index_fingerprint=_index_content_fingerprint(connection, metadata),
+                )
+        except RetrievalError:
+            raise
+        except sqlite3.DatabaseError as error:
+            raise RetrievalError(
+                "index_read_failed",
+                f"Could not read the local search index: {error}. Rebuild it with 'corpusdock index'.",
+            ) from error
+
+    def assert_snapshot_current(self, snapshot: SearchCorpusSnapshot) -> None:
+        """Reject use of a derived snapshot after its exact index changes."""
+
+        try:
+            with closing(self._connect()) as connection:
+                metadata = _read_index_metadata(connection)
+                _assert_index_current(connection, self.project_root, metadata)
+                current = (
+                    metadata["built_at"],
+                    int(metadata["sources"]),
+                    int(metadata["chunks"]),
+                    int(metadata["partial_sources"]),
+                    _index_content_fingerprint(connection, metadata),
+                )
+        except RetrievalError:
+            raise
+        except sqlite3.DatabaseError as error:
+            raise RetrievalError(
+                "index_read_failed",
+                f"Could not read the local search index: {error}. Rebuild it with 'corpusdock index'.",
+            ) from error
+        expected = (
+            snapshot.index_built_at,
+            snapshot.indexed_sources,
+            snapshot.indexed_chunks,
+            snapshot.partial_sources,
+            snapshot.index_fingerprint,
+        )
+        if current != expected:
+            raise RetrievalError(
+                "index_snapshot_stale",
+                "The exact search index changed after the derived retrieval snapshot was built.",
+            )
 
     def _connect(self) -> sqlite3.Connection:
         if not self.path.is_file():
@@ -1093,6 +1177,40 @@ def _assert_index_current(
                 )
 
 
+def _index_content_fingerprint(
+    connection: sqlite3.Connection, metadata: dict[str, str]
+) -> str:
+    """Fingerprint canonical inputs represented by one exact index snapshot."""
+
+    rows = connection.execute(
+        """
+        SELECT source_id, extraction_sha256, chunk_sha256
+        FROM artifact_state
+        ORDER BY source_id
+        """
+    ).fetchall()
+    if len(rows) != int(metadata["sources"]):
+        raise RetrievalError(
+            "index_schema_invalid",
+            "Search index artifact state is incomplete; run 'corpusdock index'.",
+        )
+    digest = sha256()
+    for value in (
+        "corpusdock-index-snapshot-v1",
+        metadata["schema_version"],
+        metadata["manifest_sha256"],
+        metadata["sources"],
+        metadata["chunks"],
+    ):
+        digest.update(value.encode("utf-8"))
+        digest.update(b"\0")
+    for row in rows:
+        for field in ("source_id", "extraction_sha256", "chunk_sha256"):
+            digest.update(str(row[field]).encode("utf-8"))
+            digest.update(b"\0")
+    return f"sha256:{digest.hexdigest()}"
+
+
 def _compile_fts_query(query: str, match_mode: MatchMode) -> str:
     if match_mode not in {"all", "any", "phrase"}:
         raise RetrievalError(
@@ -1504,4 +1622,11 @@ _VERIFY_SQL = f"""
     FROM chunks AS c
     JOIN sources AS s ON s.source_id = c.source_id
     WHERE c.evidence_id = ?
+"""
+
+_SNAPSHOT_SQL = f"""
+    SELECT {_SEARCH_COLUMNS}, NULL AS rank
+    FROM chunks AS c
+    JOIN sources AS s ON s.source_id = c.source_id
+    ORDER BY c.chunk_id ASC
 """

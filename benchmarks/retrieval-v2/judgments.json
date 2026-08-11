@@ -1,0 +1,359 @@
+{
+  "schema_version": 1,
+  "name": "corpusdock-multilingual-semantic-v2",
+  "description": "Project-authored top-3 cases for lexical, paraphrase, multilingual, cross-lingual, distractor, and citation-aware retrieval.",
+  "cases": [
+    {
+      "case_id": "lexical-harbor-retention",
+      "category": "lexical",
+      "query": "cargo inspection records",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-7946d9c519a7ea7080ea458809a41335edd5ede1d7f126c7679b1bc8d6c667e9",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "phrase-observatory-wind",
+      "category": "phrase",
+      "query": "sustained winds",
+      "match_mode": "phrase",
+      "relevance": [
+        {
+          "source_id": "src-5db34b6da2cf41bb6412d851d3aaf399453f39a0a02b19bf83e03370ace61a8b",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-source-operators",
+      "category": "cross_source",
+      "query": "operators",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-7946d9c519a7ea7080ea458809a41335edd5ede1d7f126c7679b1bc8d6c667e9",
+          "locator": {"locator_type": "text_line", "line_start": 3, "line_end": 3}
+        },
+        {
+          "source_id": "src-5db34b6da2cf41bb6412d851d3aaf399453f39a0a02b19bf83e03370ace61a8b",
+          "locator": {"locator_type": "text_line", "line_start": 3, "line_end": 3}
+        }
+      ]
+    },
+    {
+      "case_id": "citation-garden-mulch",
+      "category": "citation",
+      "query": "leaf mulch",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-cdbd02cce24ed6247881e647828df3e9a769c331cd617326c9de3fc63e16d35a",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "lexical-railway-bearings",
+      "category": "lexical",
+      "query": "wheel bearings",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-0ae6f90fe12469c24e644d6a2f1e66927bfb00d83c8bda8d7f2e92e1cad32354",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "paraphrase-harbor-retention",
+      "category": "paraphrase_en",
+      "query": "keep shipping paperwork for seven years",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-7946d9c519a7ea7080ea458809a41335edd5ede1d7f126c7679b1bc8d6c667e9",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "paraphrase-garden-moisture",
+      "category": "paraphrase_en",
+      "query": "protect soil from drying out with fallen leaves",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-cdbd02cce24ed6247881e647828df3e9a769c331cd617326c9de3fc63e16d35a",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "paraphrase-observatory-weather",
+      "category": "paraphrase_en",
+      "query": "when must the telescope building be sealed because of the weather",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-5db34b6da2cf41bb6412d851d3aaf399453f39a0a02b19bf83e03370ace61a8b",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "paraphrase-railway-emergency-brake",
+      "category": "paraphrase_en",
+      "query": "how often is the train emergency stopping system tested",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-0ae6f90fe12469c24e644d6a2f1e66927bfb00d83c8bda8d7f2e92e1cad32354",
+          "locator": {"locator_type": "text_line", "line_start": 3, "line_end": 3}
+        }
+      ]
+    },
+    {
+      "case_id": "paraphrase-battery-charge",
+      "category": "paraphrase_en",
+      "query": "recommended charge level while lithium batteries are not in use",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-45c733e45bea809efdcf758efabfdb7d34f98bc8633b4c27074ae0f34cd8cffe",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "same-language-museum-humidity-fr",
+      "category": "multilingual_same_language",
+      "query": "Quel niveau d'humidité convient aux anciennes images sensibles ?",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-01f9aa82821d543a370e68112360a5c04f53082f9ee2046dc6728fd3d228134d",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "same-language-avalanche-beacons-cs",
+      "category": "multilingual_same_language",
+      "query": "Kdy musí záchranáři vyzkoušet nouzové majáky do laviny?",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-6d4faf5f99150a065a620a3a84ab48571e966b11a2166453cb9274e2351166d8",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "same-language-water-deadline-es",
+      "category": "multilingual_same_language",
+      "query": "¿Cuál es el plazo máximo para examinar el agua recogida?",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-2642c4da2c81047f1f187bbe78c5b2d34b98354a51ba18def861762f0e7db15d",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "same-language-paper-temperature-de",
+      "category": "multilingual_same_language",
+      "query": "Bei welcher Raumtemperatur schützt man altes säurehaltiges Papier?",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-c1d156d95ffdf564726adf167c3363fe8e099a9d7a69b99697949f75439741ab",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "same-language-seed-temperature-it",
+      "category": "multilingual_same_language",
+      "query": "A quale temperatura si tengono le sementi per molti anni?",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-636a8c8a7eac72fb88b0f33369d5258458eec1437cd406637556b6e6c552865b",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "same-language-kiln-opening-pt",
+      "category": "multilingual_same_language",
+      "query": "Quando é seguro destrancar o forno após a cozedura?",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-684da315a50db5920903fb7995e7c4e113b24dccc122a9552d55a92af3232049",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "same-language-food-temperature-ja",
+      "category": "multilingual_same_language",
+      "query": "冷たい食品の保存温度の上限は何度ですか",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-1e8b08509c3b9521a03854365a79bbb7ee66d884dcba7a85286ce5031424f7c5",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-lingual-museum-humidity-en-fr",
+      "category": "cross_lingual",
+      "query": "relative humidity target for storing fragile photographs",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-01f9aa82821d543a370e68112360a5c04f53082f9ee2046dc6728fd3d228134d",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-lingual-avalanche-beacons-en-cs",
+      "category": "cross_lingual",
+      "query": "when should an alpine rescue team test avalanche beacons",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-6d4faf5f99150a065a620a3a84ab48571e966b11a2166453cb9274e2351166d8",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-lingual-water-samples-en-es",
+      "category": "cross_lingual",
+      "query": "temperature and analysis deadline for collected water samples",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-2642c4da2c81047f1f187bbe78c5b2d34b98354a51ba18def861762f0e7db15d",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-lingual-paper-storage-en-de",
+      "category": "cross_lingual",
+      "query": "storage temperature for acidic archival paper",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-c1d156d95ffdf564726adf167c3363fe8e099a9d7a69b99697949f75439741ab",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-lingual-seed-storage-en-it",
+      "category": "cross_lingual",
+      "query": "temperature for preserving seeds over many years",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-636a8c8a7eac72fb88b0f33369d5258458eec1437cd406637556b6e6c552865b",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-lingual-kiln-opening-en-pt",
+      "category": "cross_lingual",
+      "query": "safe temperature before opening a ceramics kiln",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-684da315a50db5920903fb7995e7c4e113b24dccc122a9552d55a92af3232049",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-lingual-food-temperature-en-ja",
+      "category": "cross_lingual",
+      "query": "maximum storage temperature for refrigerated food",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-1e8b08509c3b9521a03854365a79bbb7ee66d884dcba7a85286ce5031424f7c5",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-lingual-coastal-warning-en-pl",
+      "category": "cross_lingual",
+      "query": "wind threshold for a small boat coastal warning",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-cfe2ebb68d582e3efdd3831c4516f71f352add259950f434cec3f9f22dc15197",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-lingual-archive-master-en-nl",
+      "category": "cross_lingual",
+      "query": "resolution and file format for an archival digital master",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-4d5c732df752c888f300e674cbfa67ad7dbe3c2d3e575477527fafb360c9dcb4",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-lingual-battery-fr-en",
+      "category": "cross_lingual",
+      "query": "À quel niveau de charge faut-il ranger les batteries au lithium ?",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-45c733e45bea809efdcf758efabfdb7d34f98bc8633b4c27074ae0f34cd8cffe",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-lingual-garden-de-en",
+      "category": "cross_lingual",
+      "query": "Wie verhindert eine Schicht aus Herbstlaub das Austrocknen des Bodens?",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-cdbd02cce24ed6247881e647828df3e9a769c331cd617326c9de3fc63e16d35a",
+          "locator": {"locator_type": "text_line", "line_start": 2, "line_end": 2}
+        }
+      ]
+    },
+    {
+      "case_id": "cross-lingual-railway-es-en",
+      "category": "cross_lingual",
+      "query": "¿Con qué frecuencia se prueba el freno de emergencia del tren?",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-0ae6f90fe12469c24e644d6a2f1e66927bfb00d83c8bda8d7f2e92e1cad32354",
+          "locator": {"locator_type": "text_line", "line_start": 3, "line_end": 3}
+        }
+      ]
+    }
+  ]
+}

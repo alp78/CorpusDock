@@ -1,0 +1,3 @@
+Railway Maintenance Handbook
+Wheel bearings are inspected after every ten thousand kilometers of service.
+The emergency brake receives a functional test once per month.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 
 import pytest
 
@@ -196,6 +197,32 @@ def test_all_any_and_phrase_matching_are_literal_and_predictable(
     assert len(backend.search("missing gamma", match_mode="any").results) == 1
     assert backend.search("beta gamma", match_mode="phrase").results == ()
     assert len(backend.search('"alpha beta"', match_mode="all").results) == 1
+
+
+def test_corpus_snapshot_preserves_exact_evidence_for_derived_retrievers(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "corpus"
+    _, source, chunk = _add_derived_source(
+        project_root,
+        tmp_path / "documents",
+        source_format="txt",
+        text="Exact local evidence for a semantic snapshot.",
+    )
+    build_search_index(project_root, now=lambda: TIMESTAMP)
+
+    snapshot = SQLiteSearchBackend(project_root).corpus_snapshot()
+
+    assert snapshot.index_built_at == TIMESTAMP
+    assert snapshot.indexed_sources == 1
+    assert snapshot.indexed_chunks == 1
+    assert snapshot.partial_sources == 0
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", snapshot.index_fingerprint)
+    assert snapshot.source_ids == (source.source_id,)
+    assert len(snapshot.evidence) == 1
+    assert snapshot.evidence[0].chunk_id == chunk.chunk_id
+    assert snapshot.evidence[0].excerpt == chunk.text
+    assert snapshot.evidence[0].locator.source_id == source.source_id
 
 
 def test_index_build_rejects_a_tampered_chunk_slice(tmp_path: Path) -> None:
