@@ -47,6 +47,7 @@ from corpusdock.manifest import (
     discover_source_files,
     find_project_root,
 )
+from corpusdock.hybrid import HybridSearchBackend
 from corpusdock.retrieval import (
     DEFAULT_SEARCH_LIMIT,
     MAX_SEARCH_LIMIT,
@@ -70,11 +71,15 @@ def _add_embedding_options(
     *,
     default_model: str | None,
     include_truncation: bool,
+    default_help: str | None = None,
 ) -> None:
-    model_help = "Local directory or namespace/model ID " + (
-        f"(default: {default_model})."
+    default_description = default_help or (
+        str(default_model)
         if default_model is not None
-        else "(default: the model recorded in the semantic index)."
+        else "the model recorded in the semantic index"
+    )
+    model_help = (
+        f"Local directory or namespace/model ID (default: {default_description})."
     )
     parser.add_argument(
         "--embedding-model",
@@ -244,11 +249,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--match",
         choices=("all", "any", "phrase"),
         default="all",
-        help="Lexical matching mode; retained as response metadata for semantic search.",
+        help="Lexical matching mode; retained as metadata for semantic and hybrid search.",
     )
     search_parser.add_argument(
         "--retrieval",
-        choices=("lexical", "semantic"),
+        choices=("lexical", "semantic", "hybrid"),
         default="lexical",
         help="Retrieval path (default: lexical).",
     )
@@ -275,14 +280,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eval_parser.add_argument(
         "--retrieval",
-        choices=("lexical", "semantic"),
+        choices=("lexical", "semantic", "hybrid"),
         default="lexical",
         help="Retrieval path to evaluate (default: lexical).",
     )
     _add_embedding_options(
         eval_parser,
-        default_model=DEFAULT_EMBEDDING_MODEL,
+        default_model=None,
         include_truncation=True,
+        default_help=(
+            f"{DEFAULT_EMBEDDING_MODEL} for semantic evaluation; the indexed model "
+            "for hybrid evaluation"
+        ),
     )
     eval_parser.add_argument(
         "--no-verify",
@@ -413,10 +422,15 @@ def _build_semantic_index(args: argparse.Namespace) -> int:
 def _search_sources(args: argparse.Namespace) -> int:
     project_root = _resolve_project_root(args.project)
     exact_backend = SQLiteSearchBackend(project_root)
-    if args.retrieval == "semantic":
+    if args.retrieval in {"semantic", "hybrid"}:
         descriptor = read_current_semantic_index_descriptor(project_root)
         provider = _semantic_query_provider(project_root, descriptor, args)
-        backend = PersistentSemanticSearchBackend(exact_backend, provider)
+        semantic_backend = PersistentSemanticSearchBackend(exact_backend, provider)
+        backend = (
+            semantic_backend
+            if args.retrieval == "semantic"
+            else HybridSearchBackend(exact_backend, semantic_backend)
+        )
     else:
         backend = exact_backend
     response = backend.search(
@@ -488,7 +502,7 @@ def _evaluate_retrieval(args: argparse.Namespace) -> int:
     exact_backend = SQLiteSearchBackend(project_root)
     if args.retrieval == "semantic":
         provider = SentenceTransformersEmbeddingProvider(
-            args.embedding_model,
+            args.embedding_model or DEFAULT_EMBEDDING_MODEL,
             revision=args.model_revision,
             cache_dir=args.model_cache or model_cache_dir_for(project_root),
             allow_download=args.allow_model_download,
@@ -500,10 +514,34 @@ def _evaluate_retrieval(args: argparse.Namespace) -> int:
         backend = InMemorySemanticSearchBackend(exact_backend, provider)
         backend_name = "in_memory_dense"
         retrieval_metadata = backend.evaluation_metadata()
+        index_size_bytes = (
+            exact_backend.path.stat().st_size if exact_backend.path.is_file() else None
+        )
+    elif args.retrieval == "hybrid":
+        descriptor = read_current_semantic_index_descriptor(project_root)
+        if (
+            args.truncate_dimension is not None
+            and args.truncate_dimension != descriptor.dimension
+        ):
+            raise SemanticIndexError(
+                "semantic_model_mismatch",
+                "Hybrid evaluation must use the persisted semantic index dimension.",
+            )
+        provider = _semantic_query_provider(project_root, descriptor, args)
+        semantic_backend = PersistentSemanticSearchBackend(exact_backend, provider)
+        backend = HybridSearchBackend(exact_backend, semantic_backend)
+        backend_name = "sqlite_fts5+persistent_dense_rrf"
+        retrieval_metadata = backend.evaluation_metadata()
+        index_size_bytes = (
+            exact_backend.path.stat().st_size + descriptor.index_size_bytes
+        )
     else:
         backend = exact_backend
         backend_name = "sqlite_fts5"
         retrieval_metadata = None
+        index_size_bytes = (
+            exact_backend.path.stat().st_size if exact_backend.path.is_file() else None
+        )
     report = evaluate_retrieval(
         dataset,
         backend,
@@ -511,9 +549,7 @@ def _evaluate_retrieval(args: argparse.Namespace) -> int:
         verify=not args.no_verify,
         backend_name=backend_name,
         retrieval_mode=args.retrieval,
-        index_size_bytes=exact_backend.path.stat().st_size
-        if exact_backend.path.is_file()
-        else None,
+        index_size_bytes=index_size_bytes,
         retrieval_metadata=retrieval_metadata,
     )
     if retrieval_metadata is not None:
@@ -560,6 +596,13 @@ def _evaluate_retrieval(args: argparse.Namespace) -> int:
         accelerator_memory = embedding["accelerator_peak_memory_allocated_bytes"]
         if accelerator_memory is not None:
             print(f"Accelerator peak allocated memory: {accelerator_memory} bytes")
+        fusion = retrieval_metadata.get("fusion")
+        if fusion is not None:
+            print(
+                "Fusion: "
+                f"{fusion['algorithm']}; {fusion['candidate_limit']} candidates; "
+                f"RRF k={fusion['rrf_k']}"
+            )
     print("Categories:")
     for category, metrics in report.by_category:
         print(

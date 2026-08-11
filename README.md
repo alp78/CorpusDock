@@ -15,7 +15,8 @@ extraction coverage. PDF ingestion is text-layer only; scanned pages are reporte
 unresolved and are never inferred from images. A versioned evaluator compares exact
 search with provider-neutral, local semantic retrieval while preserving the identical
 evidence and citation contract. A persistent local vector index now powers semantic
-search; hybrid ranking is the next retrieval stage.
+search, and deterministic reciprocal-rank fusion combines lexical and semantic
+candidates without changing their evidence.
 
 Format extraction does not invoke Calibre, LibreOffice, Pandoc, or another system
 converter. TXT, EPUB, DOCX, and unencrypted MOBI parsing is implemented in the
@@ -89,7 +90,7 @@ Search is literal lexical retrieval: `--match all` is the default, with `any` an
 `phrase` alternatives. `verify` revalidates the artifact chain and hashes an available
 original file before returning `source-anchor-confirmed`.
 
-### Persistent local semantic search
+### Persistent local semantic and hybrid search
 
 Install the optional semantic runtime, build vectors from the exact index, and query
 them locally:
@@ -99,6 +100,8 @@ uv pip install --torch-backend cpu -e '.[semantic]'
 corpusdock embed --allow-model-download --device cpu
 corpusdock search "how teams preserve operational knowledge" \
   --retrieval semantic --device cpu --json
+corpusdock search "how teams preserve operational knowledge" \
+  --retrieval hybrid --device cpu --json
 ```
 
 `--allow-model-download` is needed only for the explicit first fetch of public model
@@ -115,6 +118,15 @@ and evidence IDs as lexical search. Run `corpusdock verify <evidence-id>` for li
 source-byte verification. Re-run `corpusdock embed` after rebuilding an exact index
 whose content changed; semantic search rejects stale or checksum-invalid vectors.
 
+Hybrid search requests up to 60 candidates from both SQLite FTS5 and the persistent
+semantic index, then applies equal-weight reciprocal-rank fusion with `k=60`.
+Agreement between the independent rankings is rewarded without trying to normalize
+incompatible BM25 and cosine scores. Ties use lexical rank, semantic rank, and stable
+evidence ID in that order, so the same indexes produce the same result order across
+platforms. The returned score is the fusion score; excerpts and citations still come
+unchanged from the exact index. Use `--match any` when a long natural-language query
+should contribute broad lexical candidates.
+
 On supported NVIDIA hardware, install the CUDA runtime and use the GPU for both the
 one-time corpus build and query inference:
 
@@ -122,7 +134,7 @@ one-time corpus build and query inference:
 uv pip install --torch-backend auto -e '.[semantic]'
 corpusdock embed --allow-model-download --device cuda
 corpusdock search "how teams preserve operational knowledge" \
-  --retrieval semantic --device cuda
+  --retrieval hybrid --device cuda
 ```
 
 ## Retrieval evaluation
@@ -191,10 +203,19 @@ corpusdock eval benchmarks/retrieval-v2/judgments.json \
 Semantic evaluation deliberately builds an ephemeral in-memory matrix so candidate
 models and dimensions can be compared without replacing the persistent index.
 Production semantic search uses `corpusdock embed` followed by a search with
-`--retrieval semantic`. See the
+`--retrieval semantic` or `--retrieval hybrid`. After building the persistent index,
+evaluate the deployed fused path with:
+
+```bash
+corpusdock eval benchmarks/retrieval-v2/judgments.json \
+  --project "$semantic_project" --limit 3 --retrieval hybrid \
+  --device cuda --no-verify --json
+```
+
+See the
 [multilingual benchmark and model decision](benchmarks/retrieval-v2/README.md) for
-exact revisions, CPU/RAM/VRAM measurements, CUDA throughput, limitations, and the
-reproducible lexical control.
+exact revisions, CPU/RAM/VRAM measurements, hybrid quality gates, rejected reranker
+experiment, limitations, and the reproducible lexical control.
 
 ## Principles
 

@@ -10,6 +10,8 @@ provider = "local"
 full_text = true
 # Build the opt-in local vector index with `corpusdock embed` before enabling this.
 semantic = false
+# Hybrid retrieval fuses full-text and semantic ranks when semantic is enabled.
+hybrid = false
 max_results = 10
 
 [privacy]

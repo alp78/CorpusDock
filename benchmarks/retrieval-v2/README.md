@@ -10,6 +10,11 @@ At limit 3 there are 30 source-and-locator relevance judgments. Every relevant h
 must return the exact stored excerpt and matching text-line locator; semantic scores
 never replace CorpusDock's evidence contract.
 
+Machine-readable quality gates, immutable model revisions, and fusion settings live
+in [`expected-results.json`](expected-results.json). The manifest is bound to the
+judgment file's SHA-256 digest, so changing the dataset requires an explicit baseline
+review.
+
 ## Reproducible control
 
 ```bash
@@ -104,6 +109,8 @@ corpusdock embed --project "$benchmark_project" \
   --allow-model-download --device cpu --json
 corpusdock search "how are cargo records preserved?" \
   --project "$benchmark_project" --retrieval semantic --device cpu --json
+corpusdock search "how are cargo records preserved?" \
+  --project "$benchmark_project" --retrieval hybrid --device cpu --json
 ```
 
 The first command stores vectors and non-content provenance in the ignored
@@ -111,6 +118,42 @@ The first command stores vectors and non-content provenance in the ignored
 database. Once the model is cached, omit `--allow-model-download`; semantic queries
 resolve their hits from the exact index so citations and evidence verification remain
 unchanged.
+
+## Hybrid fusion and reranker decision
+
+The deployed hybrid path requests up to 60 results from both SQLite FTS5 and the
+persistent Qwen index, then uses equal-weight reciprocal-rank fusion with `k=60`.
+The stable tie order is lexical rank, semantic rank, then evidence ID. On the RTX 5080
+CUDA run it preserved all dense quality metrics:
+
+| Retrieval path | Recall@3 | MRR@3 | Locator accuracy | Query p50 |
+|---|---:|---:|---:|---:|
+| SQLite FTS5 | `0.2` | `0.172414` | `0.2` | — |
+| Persistent Qwen dense | `1.0` | `1.0` | `1.0` | `29.48 ms` |
+| SQLite + Qwen RRF | `1.0` | `1.0` | `1.0` | `24.94 ms` |
+
+The dense figure is the earlier three-process median; the hybrid figure is the warm
+selection run used for this phase. Treat them as resource observations, not evidence
+that fusion makes model inference faster.
+
+Run the fused gate after `corpusdock embed`:
+
+```bash
+corpusdock eval benchmarks/retrieval-v2/judgments.json \
+  --project "$benchmark_project" --limit 3 --retrieval hybrid \
+  --device cuda --no-verify --json
+```
+
+`Qwen/Qwen3-Reranker-0.6B` at immutable revision `e61197ed…` was also tested locally
+over all 15 candidates. Its repository declared only standard Transformers and
+Sentence Transformers modules and loaded with `trust_remote_code=False`. It did not
+earn inclusion: Recall@3 remained `1.0`, MRR@3 fell to `0.982759`, reranking alone
+added `75.58 ms` p50, and total warm search latency rose to `132.11 ms` p50. The
+experiment used about 1.2 GB of additional model files and peaked at 2.79 GB CUDA
+allocation with the embedding and reranking models resident. CorpusDock therefore
+ships fusion without a reranker until a harder versioned gate demonstrates a quality
+gain worth that cost. See the official
+[Qwen3 reranker model card](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B).
 
 ## CUDA
 
@@ -124,8 +167,9 @@ corpusdock eval benchmarks/retrieval-v2/judgments.json \
   --device cuda --no-verify --json
 ```
 
-Use `corpusdock embed --device cuda` and `corpusdock search --retrieval semantic
---device cuda` for the persistent workflow.
+Use `corpusdock embed --device cuda` and either `corpusdock search --retrieval
+semantic --device cuda` or `corpusdock search --retrieval hybrid --device cuda` for
+the persistent workflow.
 
 On an RTX 5080 with CUDA 13.0, the three-run median Qwen query p50 was 29.48 ms versus
 60.10 ms on CPU. The small 15-document build is dominated by CUDA startup, so a

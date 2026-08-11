@@ -347,6 +347,26 @@ class PersistentSemanticSearchBackend:
     def info(self) -> EmbeddingModelInfo:
         return self._provider.info
 
+    def evaluation_metadata(self) -> dict[str, Any]:
+        """Return non-content model, vector, and build provenance."""
+
+        return {
+            "embedding": self.info.to_dict(),
+            "semantic_index": {
+                "storage": "sqlite",
+                "schema_version": self.descriptor.schema_version,
+                "built_at": self.descriptor.built_at,
+                "documents": self.descriptor.indexed_chunks,
+                "dimension": self.descriptor.dimension,
+                "vector_dtype": self.descriptor.vector_dtype,
+                "vector_size_bytes": self.descriptor.vector_size_bytes,
+                "index_size_bytes": self.descriptor.index_size_bytes,
+                "vectors_sha256": self.descriptor.vectors_sha256,
+                "source_index_fingerprint": self.descriptor.source_index_fingerprint,
+                **self.descriptor.build,
+            },
+        }
+
     def search(
         self,
         query: str,

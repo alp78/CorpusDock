@@ -19,6 +19,7 @@ from corpusdock.evaluation import (
     load_evaluation_dataset,
 )
 from corpusdock.extraction import extract_source, write_extraction_artifact
+from corpusdock.hybrid import FusionConfig
 from corpusdock.manifest import ManifestStore
 from corpusdock.retrieval import SQLiteSearchBackend, build_search_index
 
@@ -146,6 +147,31 @@ def test_multilingual_semantic_gate_has_a_deterministic_lexical_control(
     assert categories["paraphrase_en"].recall_at_k == 0.0
     assert categories["multilingual_same_language"].recall_at_k == 0.0
     assert categories["cross_lingual"].recall_at_k == 0.0
+
+
+def test_multilingual_quality_gate_manifest_is_bound_to_data_and_fusion() -> None:
+    payload = json.loads(
+        (SEMANTIC_BENCHMARK_ROOT / "expected-results.json").read_text(encoding="utf-8")
+    )
+    dataset_sha256 = sha256(
+        (SEMANTIC_BENCHMARK_ROOT / "judgments.json").read_bytes()
+    ).hexdigest()
+    gates = payload["quality_gates"]
+
+    assert payload["schema_version"] == 1
+    assert payload["dataset_sha256"] == dataset_sha256
+    assert payload["limit"] == 3
+    assert gates["lexical"] == {
+        "backend": "sqlite_fts5",
+        "recall_at_3": 0.2,
+        "mrr_at_3": 0.172414,
+        "locator_accuracy": 0.2,
+    }
+    assert gates["hybrid"]["fusion"] == FusionConfig().to_dict()
+    assert gates["semantic"]["recall_at_3"] == 1.0
+    assert gates["hybrid"]["recall_at_3"] == 1.0
+    assert gates["hybrid"]["mrr_at_3"] >= gates["semantic"]["mrr_at_3"]
+    assert payload["reranker_experiment"]["retained"] is False
 
 
 def test_eval_cli_emits_the_versioned_non_content_report(

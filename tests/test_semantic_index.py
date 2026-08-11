@@ -17,6 +17,7 @@ from corpusdock.cli import main
 from corpusdock.embeddings import EmbeddingError, EmbeddingModelInfo
 from corpusdock.evaluation import evaluate_retrieval, load_evaluation_dataset
 from corpusdock.extraction import extract_source, write_extraction_artifact
+from corpusdock.hybrid import HybridSearchBackend
 from corpusdock.manifest import ManifestStore
 from corpusdock.retrieval import SQLiteSearchBackend, build_search_index
 from corpusdock.semantic_index import (
@@ -165,6 +166,23 @@ def test_persistent_semantic_index_preserves_exact_evidence_without_copying_text
     assert report.summary.locator_accuracy == 1.0
     assert report.summary.verification_rate == 1.0
 
+    hybrid = HybridSearchBackend(exact_backend, backend)
+    hybrid_report = evaluate_retrieval(
+        load_evaluation_dataset(BENCHMARK_ROOT / "judgments.json"),
+        hybrid,
+        limit=2,
+        backend_name="sqlite_fts5+persistent_dense_rrf",
+        retrieval_mode="hybrid",
+        retrieval_metadata=hybrid.evaluation_metadata(),
+    )
+    assert hybrid_report.summary.recall_at_k == 1.0
+    assert hybrid_report.summary.mean_reciprocal_rank_at_k == 1.0
+    assert hybrid_report.summary.locator_accuracy == 1.0
+    assert hybrid_report.summary.verification_rate == 1.0
+    hybrid_payload = hybrid_report.to_dict()
+    assert hybrid_payload["retrieval"]["fusion"]["rrf_k"] == 60
+    assert "excerpt" not in json.dumps(hybrid_payload)
+
 
 def test_semantic_index_build_is_atomic_when_new_vectors_are_invalid(
     tmp_path: Path,
@@ -311,6 +329,52 @@ def test_semantic_cli_builds_searches_and_reports_index_health(
     assert response["result_count"] == 1
     assert "cargo inspection records" in response["results"][0]["excerpt"].casefold()
     assert response["results"][0]["locator"]["line_start"] == 1
+
+    assert (
+        main(
+            [
+                "search",
+                "cargo inspection records",
+                "--project",
+                str(project_root),
+                "--retrieval",
+                "hybrid",
+                "--embedding-model",
+                "fixture/model",
+                "--limit",
+                "1",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    hybrid_response = json.loads(capsys.readouterr().out)
+    assert hybrid_response["result_count"] == 1
+    assert hybrid_response["results"][0]["score"] == round(2 / 61, 12)
+
+    assert (
+        main(
+            [
+                "eval",
+                str(BENCHMARK_ROOT / "judgments.json"),
+                "--project",
+                str(project_root),
+                "--retrieval",
+                "hybrid",
+                "--embedding-model",
+                "fixture/model",
+                "--limit",
+                "2",
+                "--no-verify",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    hybrid_evaluation = json.loads(capsys.readouterr().out)
+    assert hybrid_evaluation["retrieval"]["mode"] == "hybrid"
+    assert hybrid_evaluation["retrieval"]["fusion"]["candidate_limit"] == 60
+    assert hybrid_evaluation["summary"]["recall_at_k"] == 1.0
 
     assert main(["doctor", "--project", str(project_root), "--json"]) == 0
     health = json.loads(capsys.readouterr().out)

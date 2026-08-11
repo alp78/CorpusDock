@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "dataset_sha256": "32376fadae1c04e8731624b4420c21d00b4e21a7f30b15afd00ea71574d5568b",
+  "limit": 3,
+  "quality_gates": {
+    "lexical": {
+      "backend": "sqlite_fts5",
+      "recall_at_3": 0.2,
+      "mrr_at_3": 0.172414,
+      "locator_accuracy": 0.2
+    },
+    "semantic": {
+      "backend": "persistent_dense",
+      "model_id": "Qwen/Qwen3-Embedding-0.6B",
+      "model_revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+      "dimension": 1024,
+      "recall_at_3": 1.0,
+      "mrr_at_3": 1.0,
+      "locator_accuracy": 1.0
+    },
+    "hybrid": {
+      "backend": "sqlite_fts5+persistent_dense_rrf",
+      "model_id": "Qwen/Qwen3-Embedding-0.6B",
+      "model_revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+      "dimension": 1024,
+      "fusion": {
+        "algorithm": "reciprocal_rank_fusion",
+        "candidate_limit": 60,
+        "rrf_k": 60,
+        "lexical_weight": 1.0,
+        "semantic_weight": 1.0,
+        "tie_break": "lexical_rank,semantic_rank,evidence_id"
+      },
+      "recall_at_3": 1.0,
+      "mrr_at_3": 1.0,
+      "locator_accuracy": 1.0
+    }
+  },
+  "reranker_experiment": {
+    "retained": false,
+    "reason": "No recall gain, lower MRR, and materially higher latency than hybrid fusion.",
+    "model_id": "Qwen/Qwen3-Reranker-0.6B",
+    "model_revision": "e61197ed45024b0ed8a2d74b80b4d909f1255473",
+    "candidate_limit": 15,
+    "recall_at_3": 1.0,
+    "mrr_at_3": 0.982759,
+    "locator_accuracy": 1.0,
+    "rerank_only_p50_ms": 75.58,
+    "search_plus_rerank_p50_ms": 132.114
+  }
+}

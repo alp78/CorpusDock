@@ -59,7 +59,7 @@ def test_eval_parser_accepts_local_baseline_options() -> None:
     assert args.json is True
     assert args.limit == 5
     assert args.no_verify is True
-    assert args.embedding_model == DEFAULT_EMBEDDING_MODEL
+    assert args.embedding_model is None
 
 
 def test_eval_parser_accepts_explicit_local_semantic_options() -> None:
@@ -90,6 +90,20 @@ def test_eval_parser_accepts_explicit_local_semantic_options() -> None:
     assert args.device == "cuda"
     assert args.embedding_batch_size == 8
     assert args.truncate_dimension == 256
+
+
+def test_search_and_eval_parsers_accept_hybrid_retrieval() -> None:
+    search = build_parser().parse_args(
+        ["search", "operational knowledge", "--retrieval", "hybrid"]
+    )
+    evaluate = build_parser().parse_args(
+        ["eval", "judgments.json", "--retrieval", "hybrid"]
+    )
+
+    assert search.retrieval == "hybrid"
+    assert search.embedding_model is None
+    assert evaluate.retrieval == "hybrid"
+    assert evaluate.embedding_model is None
 
 
 def test_ingest_parser_accepts_multiple_text_sources() -> None:
