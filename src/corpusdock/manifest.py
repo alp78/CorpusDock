@@ -126,6 +126,26 @@ def discover_source_files(path: Path | str) -> tuple[Path, ...]:
     return files
 
 
+def discover_mirror_files(path: Path | str) -> tuple[Path, ...]:
+    """Return every supported file in an authoritative directory, including none."""
+
+    candidate = Path(path).expanduser()
+    if not candidate.is_dir():
+        raise SourceRegistrationError(
+            f"Input mirror is not an existing directory: '{path}'."
+        )
+    return tuple(
+        sorted(
+            (
+                item
+                for item in candidate.rglob("*")
+                if item.is_file() and source_format_for(item) is not None
+            ),
+            key=lambda item: str(item).casefold(),
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SourceRecord:
     """The durable identity and local provenance of one immutable source file."""
@@ -281,6 +301,39 @@ class RegistrationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class MirrorReconciliation:
+    """One atomic reconciliation of an authoritative input-folder snapshot."""
+
+    manifest: CorpusManifest
+    scanned_paths: int
+    unique_sources: int
+    added_source_ids: tuple[str, ...]
+    removed_source_ids: tuple[str, ...]
+    retained_source_ids: tuple[str, ...]
+    added_paths: int
+    removed_paths: int
+    changed: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scanned_paths": self.scanned_paths,
+            "unique_sources": self.unique_sources,
+            "changed": self.changed,
+            "sources": {
+                "added": len(self.added_source_ids),
+                "removed": len(self.removed_source_ids),
+                "retained": len(self.retained_source_ids),
+            },
+            "paths": {
+                "added": self.added_paths,
+                "removed": self.removed_paths,
+            },
+            "added_source_ids": list(self.added_source_ids),
+            "removed_source_ids": list(self.removed_source_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class _PreparedSource:
     path: Path
     source_format: str
@@ -413,6 +466,90 @@ class ManifestStore:
             self._write(manifest)
 
         return tuple(results)
+
+    def reconcile_mirror(self, paths: Iterable[Path | str]) -> MirrorReconciliation:
+        """Make the manifest exactly match one authoritative set of local files.
+
+        Content identity, rather than path, controls reuse. Moving or renaming a file
+        therefore updates provenance without creating a new source, while changed
+        bytes create a new source ID and absent content leaves the manifest.
+        """
+
+        prepared_sources = tuple(_prepare_source(path) for path in paths)
+        manifest = (
+            self.load() if self.path.exists() else CorpusManifest.empty(self._now())
+        )
+        prior_sources = manifest.sources
+        grouped: dict[str, list[_PreparedSource]] = {}
+        for prepared in prepared_sources:
+            grouped.setdefault(prepared.source_id, []).append(prepared)
+
+        reconciliation_time = self._now()
+        sources: dict[str, SourceRecord] = {}
+        for source_id in sorted(grouped):
+            group = grouped[source_id]
+            formats = {prepared.source_format for prepared in group}
+            sizes = {prepared.size_bytes for prepared in group}
+            if len(formats) != 1 or len(sizes) != 1:
+                raise ManifestError(
+                    f"Content-identical paths for source '{source_id}' have "
+                    "inconsistent formats or sizes."
+                )
+            original_paths = tuple(
+                sorted({str(prepared.path) for prepared in group}, key=str.casefold)
+            )
+            existing = prior_sources.get(source_id)
+            if existing is not None:
+                source_format = next(iter(formats))
+                size_bytes = next(iter(sizes))
+                if (
+                    existing.source_format != source_format
+                    or existing.size_bytes != size_bytes
+                ):
+                    raise ManifestError(
+                        f"Source '{source_id}' conflicts with its registered metadata."
+                    )
+                sources[source_id] = replace(existing, original_paths=original_paths)
+                continue
+            first = group[0]
+            sources[source_id] = SourceRecord(
+                source_id=source_id,
+                sha256=first.sha256,
+                source_format=first.source_format,
+                size_bytes=first.size_bytes,
+                original_paths=original_paths,
+                registered_at=reconciliation_time,
+                registration_tool_version=__version__,
+            )
+
+        prior_ids = set(prior_sources)
+        current_ids = set(sources)
+        prior_paths = {
+            path for source in prior_sources.values() for path in source.original_paths
+        }
+        current_paths = {
+            path for source in sources.values() for path in source.original_paths
+        }
+        changed = sources != prior_sources or not self.path.exists()
+        if changed:
+            manifest = replace(
+                manifest,
+                updated_at=reconciliation_time,
+                sources=sources,
+            )
+            self._write(manifest)
+
+        return MirrorReconciliation(
+            manifest=manifest,
+            scanned_paths=len(prepared_sources),
+            unique_sources=len(sources),
+            added_source_ids=tuple(sorted(current_ids - prior_ids)),
+            removed_source_ids=tuple(sorted(prior_ids - current_ids)),
+            retained_source_ids=tuple(sorted(prior_ids & current_ids)),
+            added_paths=len(current_paths - prior_paths),
+            removed_paths=len(prior_paths - current_paths),
+            changed=changed,
+        )
 
     def get_source(self, source_id: str) -> SourceRecord | None:
         """Return a registered source by its stable ID."""

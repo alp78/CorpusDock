@@ -259,14 +259,50 @@ def write_extraction_artifact(
 ) -> Path:
     """Atomically write a content-bearing derived artifact outside version control."""
 
-    path = artifact_path_for(project_root, artifact.source_id)
+    return _write_extraction_payload(
+        project_root, artifact.to_dict(), artifact.source_id
+    )
+
+
+def repoint_extraction_artifact(
+    project_root: Path | str,
+    artifact: dict[str, Any],
+    source: SourceRecord,
+    source_path: Path | str,
+) -> Path:
+    """Update only path provenance when immutable source bytes moved locally."""
+
+    if not extraction_artifact_is_current(artifact, source):
+        raise ExtractionError(
+            "artifact_stale",
+            "Only a current extraction artifact can be repointed.",
+        )
+    resolved_path = Path(source_path).expanduser().resolve(strict=True)
+    if str(resolved_path) not in source.original_paths:
+        raise ExtractionError(
+            "artifact_source_path_invalid",
+            "The replacement extraction path is not registered for this source.",
+        )
+    payload = dict(artifact)
+    payload["source_path"] = str(resolved_path)
+    return _write_extraction_payload(project_root, payload, source.source_id)
+
+
+def _write_extraction_payload(
+    project_root: Path | str,
+    payload: dict[str, Any],
+    source_id: str,
+) -> Path:
+    """Atomically persist one already-validated extraction payload."""
+
+    path = artifact_path_for(project_root, source_id)
     temporary_path: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         with temporary_path.open("w", encoding="utf-8", newline="\n") as artifact_file:
             json.dump(
-                artifact.to_dict(),
+                payload,
                 artifact_file,
                 ensure_ascii=False,
                 indent=2,
@@ -312,6 +348,26 @@ def load_extraction_artifact(
             f"Extraction artifact at '{path}' has an unsupported schema.",
         )
     return payload
+
+
+def extraction_artifact_is_current(artifact: object, source: SourceRecord) -> bool:
+    """Return whether an extraction can be reused for immutable source bytes."""
+
+    if not isinstance(artifact, dict):
+        return False
+    parser = artifact.get("parser")
+    if not isinstance(parser, dict):
+        return False
+    parser_name, parser_version = _parser_identity(source.source_format)
+    return (
+        artifact.get("schema_version") == EXTRACTION_SCHEMA_VERSION
+        and artifact.get("source_id") == source.source_id
+        and artifact.get("source_sha256") == source.sha256
+        and artifact.get("source_format") == source.source_format
+        and parser.get("name") == parser_name
+        and parser.get("version") == parser_version
+        and artifact.get("status") in {"complete", "partial", "failed"}
+    )
 
 
 def extraction_coverage_report(

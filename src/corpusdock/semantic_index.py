@@ -37,7 +37,8 @@ from corpusdock.retrieval import (
 )
 
 
-SEMANTIC_INDEX_SCHEMA_VERSION = 1
+SEMANTIC_INDEX_SCHEMA_VERSION = 2
+_SUPPORTED_SEMANTIC_INDEX_SCHEMA_VERSIONS = {1, 2}
 SEMANTIC_INDEX_FILE_NAME = "semantic.sqlite3"
 VECTOR_DTYPE = "float32-le"
 MAX_EMBEDDING_DIMENSION = 65_536
@@ -179,32 +180,87 @@ def build_semantic_index(
         )
     _validate_provider_policy(provider.info)
 
-    np = _numpy()
+    path = semantic_index_path_for(root)
+    cached: dict[str, _VectorRecord] = {}
+    if path.is_file():
+        try:
+            cached_descriptor, cached_records = _read_semantic_index(root)
+            _validate_provider_compatibility(cached_descriptor, provider.info)
+            cached = {
+                record.evidence_id: record
+                for record in cached_records
+                if len(record.vector) == provider.info.dimension * 4
+            }
+        except SemanticIndexError:
+            cached = {}
+
+    reusable: dict[str, _VectorRecord] = {}
+    pending = []
+    for evidence in snapshot.evidence:
+        record = cached.get(evidence.evidence_id)
+        if (
+            record is not None
+            and record.chunk_id == evidence.chunk_id
+            and record.source_id == evidence.locator.source_id
+        ):
+            reusable[evidence.evidence_id] = record
+        else:
+            pending.append(evidence)
+
+    embedded_vectors: dict[str, bytes] = {}
     started = clock()
-    raw_vectors = provider.embed_documents(
-        tuple(evidence.excerpt for evidence in snapshot.evidence)
-    )
-    matrix = _normalized_matrix(
-        raw_vectors,
-        rows=len(snapshot.evidence),
-        dimension=provider.info.dimension,
-        label="document",
-        np=np,
-    )
-    storage_matrix = np.ascontiguousarray(matrix, dtype=np.dtype("<f4"))
-    elapsed = max(0.0, clock() - started)
+    if pending:
+        np = _numpy()
+        raw_vectors = provider.embed_documents(
+            tuple(evidence.excerpt for evidence in pending)
+        )
+        matrix = _normalized_matrix(
+            raw_vectors,
+            rows=len(pending),
+            dimension=provider.info.dimension,
+            label="document",
+            np=np,
+        )
+        storage_matrix = np.ascontiguousarray(matrix, dtype=np.dtype("<f4"))
+        embedded_vectors = {
+            evidence.evidence_id: storage_matrix[ordinal].tobytes(order="C")
+            for ordinal, evidence in enumerate(pending)
+        }
+    elapsed = max(0.0, clock() - started) if pending else 0.0
     exact_backend.assert_snapshot_current(snapshot)
 
     embedding = provider.info.to_dict()
-    dimension = int(storage_matrix.shape[1])
+    dimension = provider.info.dimension
     _validate_embedding_metadata(embedding, expected_dimension=dimension)
     build = {
         "document_embedding_ms": _rounded_ms(elapsed),
-        "documents_per_second": round(
-            len(snapshot.evidence) / elapsed if elapsed else 0.0, 6
-        ),
+        "documents_per_second": round(len(pending) / elapsed if elapsed else 0.0, 6),
+        "embedded_documents": len(pending),
+        "reused_documents": len(reusable),
     }
-    records = _records_from_matrix(snapshot, storage_matrix)
+    records = tuple(
+        _VectorRecord(
+            ordinal=ordinal,
+            chunk_id=_required_chunk_id(evidence.chunk_id),
+            evidence_id=_required_identifier(
+                evidence.evidence_id,
+                _EVIDENCE_ID_PATTERN,
+                "evidence",
+            ),
+            source_id=_required_identifier(
+                evidence.locator.source_id,
+                _SOURCE_ID_PATTERN,
+                "source",
+            ),
+            vector=(
+                reusable[evidence.evidence_id].vector
+                if evidence.evidence_id in reusable
+                else embedded_vectors[evidence.evidence_id]
+            ),
+        )
+        for ordinal, evidence in enumerate(snapshot.evidence)
+    )
+    vector_size_bytes = sum(len(record.vector) for record in records)
     vectors_sha256 = _vectors_digest(
         snapshot.index_fingerprint,
         str(embedding["model_fingerprint"]),
@@ -221,70 +277,17 @@ def build_semantic_index(
         "chunks": str(snapshot.indexed_chunks),
         "partial_sources": str(snapshot.partial_sources),
         "vector_dtype": VECTOR_DTYPE,
-        "vector_size_bytes": str(int(storage_matrix.nbytes)),
+        "vector_size_bytes": str(vector_size_bytes),
         "vectors_sha256": vectors_sha256,
         "embedding_json": _canonical_json(embedding),
         "build_json": _canonical_json(build),
     }
-    path = semantic_index_path_for(root)
-    temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    connection: sqlite3.Connection | None = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(temporary_path)
-        connection.execute("PRAGMA journal_mode = DELETE")
-        connection.execute("PRAGMA synchronous = FULL")
-        _create_schema(connection)
-        with connection:
-            connection.executemany(
-                "INSERT INTO semantic_metadata(key, value) VALUES (?, ?)",
-                sorted(metadata.items()),
-            )
-            connection.executemany(
-                """
-                INSERT INTO vectors(
-                    ordinal, chunk_id, evidence_id, source_id, vector
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    (
-                        record.ordinal,
-                        record.chunk_id,
-                        record.evidence_id,
-                        record.source_id,
-                        sqlite3.Binary(record.vector),
-                    )
-                    for record in records
-                ),
-            )
-        integrity = connection.execute("PRAGMA integrity_check").fetchone()
-        if integrity is None or integrity[0] != "ok":
-            raise SemanticIndexError(
-                "semantic_index_integrity_failed",
-                "SQLite did not confirm the integrity of the new semantic index.",
-            )
-        connection.close()
-        connection = None
-        with temporary_path.open("r+b") as index_file:
-            os.fsync(index_file.fileno())
-        _read_semantic_index_path(temporary_path)
-        exact_backend.assert_snapshot_current(snapshot)
-        os.replace(temporary_path, path)
-        _fsync_directory(path.parent)
-    except SemanticIndexError:
-        raise
-    except (OSError, sqlite3.DatabaseError) as error:
-        raise SemanticIndexError(
-            "semantic_index_build_failed",
-            f"Could not build the local semantic index: {error}.",
-        ) from error
-    finally:
-        if connection is not None:
-            connection.close()
-        try:
-            temporary_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    _write_semantic_index_atomically(
+        path,
+        metadata,
+        records,
+        before_replace=lambda: exact_backend.assert_snapshot_current(snapshot),
+    )
 
     return read_semantic_index_descriptor(root)
 
@@ -305,6 +308,92 @@ def read_current_semantic_index_descriptor(
 
     descriptor, _, _ = _current_semantic_index(SQLiteSearchBackend(project_root))
     return descriptor
+
+
+def prune_semantic_index_cache(project_root: Path | str) -> int:
+    """Remove vectors for absent evidence while retaining reusable stale vectors."""
+
+    root = Path(project_root).expanduser().resolve()
+    path = semantic_index_path_for(root)
+    if not path.is_file():
+        return 0
+    exact_backend = SQLiteSearchBackend(root)
+    snapshot = exact_backend.corpus_snapshot()
+    current = {
+        evidence.evidence_id: (evidence.chunk_id, evidence.locator.source_id)
+        for evidence in snapshot.evidence
+    }
+    try:
+        descriptor, records = _read_semantic_index(root)
+    except SemanticIndexError:
+        try:
+            path.unlink()
+            _fsync_directory(path.parent)
+        except OSError as error:
+            raise SemanticIndexError(
+                "semantic_index_prune_failed",
+                f"Could not remove an invalid semantic cache: {error}.",
+            ) from error
+        return 0
+
+    retained = tuple(
+        record
+        for record in records
+        if current.get(record.evidence_id) == (record.chunk_id, record.source_id)
+    )
+    removed = len(records) - len(retained)
+    if not removed:
+        return 0
+    exact_backend.assert_snapshot_current(snapshot)
+    if not retained:
+        try:
+            path.unlink()
+            _fsync_directory(path.parent)
+        except OSError as error:
+            raise SemanticIndexError(
+                "semantic_index_prune_failed",
+                f"Could not remove an empty semantic cache: {error}.",
+            ) from error
+        return removed
+
+    reordered = tuple(
+        replace(record, ordinal=ordinal) for ordinal, record in enumerate(retained)
+    )
+    dimension = descriptor.dimension
+    vector_size_bytes = sum(len(record.vector) for record in reordered)
+    build = {
+        "document_embedding_ms": float(descriptor.build["document_embedding_ms"]),
+        "documents_per_second": float(descriptor.build["documents_per_second"]),
+        "embedded_documents": int(descriptor.build["embedded_documents"]),
+        "reused_documents": int(descriptor.build["reused_documents"]),
+    }
+    metadata = {
+        "schema_version": str(SEMANTIC_INDEX_SCHEMA_VERSION),
+        "tool_version": __version__,
+        "built_at": descriptor.built_at,
+        "source_index_built_at": descriptor.source_index_built_at,
+        "source_index_fingerprint": descriptor.source_index_fingerprint,
+        "sources": str(len({record.source_id for record in reordered})),
+        "chunks": str(len(reordered)),
+        "partial_sources": "0",
+        "vector_dtype": VECTOR_DTYPE,
+        "vector_size_bytes": str(vector_size_bytes),
+        "vectors_sha256": _vectors_digest(
+            descriptor.source_index_fingerprint,
+            descriptor.model_fingerprint,
+            dimension,
+            reordered,
+        ),
+        "embedding_json": _canonical_json(descriptor.embedding),
+        "build_json": _canonical_json(build),
+    }
+    _write_semantic_index_atomically(
+        path,
+        metadata,
+        reordered,
+        before_replace=lambda: exact_backend.assert_snapshot_current(snapshot),
+    )
+    return removed
 
 
 class PersistentSemanticSearchBackend:
@@ -475,6 +564,73 @@ def semantic_index_status_report(project_root: Path | str) -> dict[str, Any]:
         return {"status": status, "path": str(path), "error": str(error)}
 
 
+def _write_semantic_index_atomically(
+    path: Path,
+    metadata: Mapping[str, str],
+    records: Sequence[_VectorRecord],
+    *,
+    before_replace: Callable[[], None],
+) -> None:
+    temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    connection: sqlite3.Connection | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(temporary_path)
+        connection.execute("PRAGMA journal_mode = DELETE")
+        connection.execute("PRAGMA synchronous = FULL")
+        _create_schema(connection)
+        with connection:
+            connection.executemany(
+                "INSERT INTO semantic_metadata(key, value) VALUES (?, ?)",
+                sorted(metadata.items()),
+            )
+            connection.executemany(
+                """
+                INSERT INTO vectors(
+                    ordinal, chunk_id, evidence_id, source_id, vector
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    (
+                        record.ordinal,
+                        record.chunk_id,
+                        record.evidence_id,
+                        record.source_id,
+                        sqlite3.Binary(record.vector),
+                    )
+                    for record in records
+                ),
+            )
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()
+        if integrity is None or integrity[0] != "ok":
+            raise SemanticIndexError(
+                "semantic_index_integrity_failed",
+                "SQLite did not confirm the integrity of the new semantic index.",
+            )
+        connection.close()
+        connection = None
+        with temporary_path.open("r+b") as index_file:
+            os.fsync(index_file.fileno())
+        _read_semantic_index_path(temporary_path)
+        before_replace()
+        os.replace(temporary_path, path)
+        _fsync_directory(path.parent)
+    except SemanticIndexError:
+        raise
+    except (OSError, sqlite3.DatabaseError) as error:
+        raise SemanticIndexError(
+            "semantic_index_build_failed",
+            f"Could not build the local semantic index: {error}.",
+        ) from error
+    finally:
+        if connection is not None:
+            connection.close()
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _create_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(
         f"""
@@ -522,7 +678,10 @@ def _read_semantic_index_path(
                     "SQLite did not confirm the integrity of the semantic index.",
                 )
             user_version = connection.execute("PRAGMA user_version").fetchone()
-            if user_version is None or user_version[0] != SEMANTIC_INDEX_SCHEMA_VERSION:
+            if (
+                user_version is None
+                or user_version[0] not in _SUPPORTED_SEMANTIC_INDEX_SCHEMA_VERSIONS
+            ):
                 raise SemanticIndexError(
                     "semantic_index_schema_invalid",
                     "The semantic index schema is unsupported; run 'corpusdock embed'.",
@@ -581,7 +740,7 @@ def _descriptor_from_metadata(
             "Semantic index metadata is incomplete; run 'corpusdock embed'.",
         )
     schema_version = _metadata_integer(metadata, "schema_version")
-    if schema_version != SEMANTIC_INDEX_SCHEMA_VERSION:
+    if schema_version not in _SUPPORTED_SEMANTIC_INDEX_SCHEMA_VERSIONS:
         raise SemanticIndexError(
             "semantic_index_schema_invalid",
             "The semantic index schema is unsupported; run 'corpusdock embed'.",
@@ -629,7 +788,7 @@ def _descriptor_from_metadata(
             "The semantic index dimension is outside the supported range.",
         )
     build = _json_object(metadata["build_json"], "semantic build metadata")
-    _validate_build_metadata(build)
+    _validate_build_metadata(build, schema_version=schema_version)
     if len(records) != chunks:
         raise SemanticIndexError(
             "semantic_index_incomplete",
@@ -688,6 +847,8 @@ def _descriptor_from_metadata(
         build={
             "document_embedding_ms": float(build["document_embedding_ms"]),
             "documents_per_second": float(build["documents_per_second"]),
+            "embedded_documents": int(build.get("embedded_documents", chunks)),
+            "reused_documents": int(build.get("reused_documents", 0)),
         },
     )
 
@@ -884,8 +1045,11 @@ def _validate_embedding_metadata(
         )
 
 
-def _validate_build_metadata(build: Mapping[str, Any]) -> None:
-    if set(build) != {"document_embedding_ms", "documents_per_second"}:
+def _validate_build_metadata(build: Mapping[str, Any], *, schema_version: int) -> None:
+    expected = {"document_embedding_ms", "documents_per_second"}
+    if schema_version >= 2:
+        expected.update({"embedded_documents", "reused_documents"})
+    if set(build) != expected:
         raise SemanticIndexError(
             "semantic_index_metadata_invalid",
             "Semantic build metadata has unsupported fields.",
@@ -902,6 +1066,14 @@ def _validate_build_metadata(build: Mapping[str, Any]) -> None:
                 "semantic_index_metadata_invalid",
                 f"Semantic build field '{field}' must be non-negative.",
             )
+    for field in ("embedded_documents", "reused_documents"):
+        if field in build:
+            value = build[field]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise SemanticIndexError(
+                    "semantic_index_metadata_invalid",
+                    f"Semantic build field '{field}' must be a non-negative integer.",
+                )
 
 
 def _records_from_matrix(

@@ -188,6 +188,7 @@ def test_model_download_allowlist_prefers_safe_weights_and_excludes_code() -> No
     selected = _download_file_allowlist(
         (
             "config.json",
+            "chat_template.jinja",
             "tokenizer.json",
             "modules.json",
             "model.safetensors",
@@ -201,6 +202,7 @@ def test_model_download_allowlist_prefers_safe_weights_and_excludes_code() -> No
 
     assert selected == (
         "config.json",
+        "chat_template.jinja",
         "tokenizer.json",
         "modules.json",
         "model.safetensors",

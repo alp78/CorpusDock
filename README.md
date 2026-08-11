@@ -16,7 +16,9 @@ unresolved and are never inferred from images. A versioned evaluator compares ex
 search with provider-neutral, local semantic retrieval while preserving the identical
 evidence and citation contract. A persistent local vector index now powers semantic
 search, and deterministic reciprocal-rank fusion combines lexical and semantic
-candidates without changing their evidence.
+candidates without changing their evidence. An optional local structured-extraction
+stage can derive reviewable concept mentions, claims, stance, and relations from
+those exact evidence chunks. Derived analysis never replaces source evidence.
 
 Format extraction does not invoke Calibre, LibreOffice, Pandoc, or another system
 converter. TXT, EPUB, DOCX, and unencrypted MOBI parsing is implemented in the
@@ -29,8 +31,7 @@ package. DRM-protected MOBI files and unknown compression types fail explicitly.
 ```bash
 uv sync --extra local-models
 corpusdock init .
-corpusdock ingest ./documents
-corpusdock index
+corpusdock sync ./documents
 corpusdock doctor
 corpusdock search "citation anchors" --json
 corpusdock eval ./judgments.json --json
@@ -56,6 +57,37 @@ corpusdock ingest ./documents --extract-only
 corpusdock ingest ./documents --register-only
 ```
 
+`ingest` is additive: it never removes an earlier source merely because a path is
+absent from a later command. For a long-running corpus, use an authoritative input
+mirror instead:
+
+```bash
+corpusdock sync ./documents
+corpusdock sync ./documents --configure-only
+```
+
+`sync` recursively hashes the directory, makes the manifest match its current
+contents, processes only missing or stale extraction/chunk artifacts, and atomically
+refreshes the exact index. Identical bytes have one content-derived source ID, so a
+rename updates path provenance without extracting or chunking the book again. New or
+changed bytes enter the queue; removing the last copy of a source from the directory
+prunes its extraction, chunks, semantic vector cache, and derived analysis records.
+An empty configured directory intentionally produces an empty corpus.
+
+The configuration is stored in ignored `.corpusdock/pipeline.json`. After either
+`sync` form configures an input, every `corpusdock analyze` resume scans that input
+before loading the local AI model:
+
+```bash
+corpusdock sync ./documents --configure-only
+corpusdock analyze --analysis-runtime vllm --device cuda --dtype bfloat16
+```
+
+The manifest, each per-source extraction, each per-source chunk artifact, the exact
+index, and each analysis batch are durable atomic checkpoints. A hard interruption
+may retry only the currently uncommitted unit; it cannot create duplicate committed
+sources, chunks, evidence IDs, vectors, or analysis rows.
+
 Full ingestion calculates a SHA-256 digest, assigns a content-derived `src-...` ID,
 extracts source-anchored text, and creates structure-bounded sentence chunks. Derived
 content lives in `.corpusdock/extracted/` and `.corpusdock/chunks/`; both are local and
@@ -72,9 +104,9 @@ produce fabricated evidence or chunks. Use a separately prepared text-accessible
 when scanned-page content is required.
 
 Use `corpusdock source <source-id>` to inspect a registered source as JSON. From a
-subdirectory, `ingest`, `index`, `embed`, `search`, `eval`, `verify`, `source`, and
-`doctor` discover the nearest initialized project; use `--project /path/to/project`
-to select one explicitly.
+subdirectory, `ingest`, `sync`, `index`, `embed`, `analyze`, `search`, `eval`, `verify`,
+`source`, and `doctor` discover the nearest initialized project; use
+`--project /path/to/project` to select one explicitly.
 
 The search database lives at `.corpusdock/index.sqlite3` and is ignored by Git. It is
 an atomic, rebuildable SQLite FTS5 index over persisted chunks, not the canonical
@@ -116,7 +148,9 @@ and evidence IDs, but no excerpts or source paths. Results are resolved from the
 index and therefore return the same exact excerpts, locators, citations, coverage,
 and evidence IDs as lexical search. Run `corpusdock verify <evidence-id>` for live
 source-byte verification. Re-run `corpusdock embed` after rebuilding an exact index
-whose content changed; semantic search rejects stale or checksum-invalid vectors.
+whose content changed. The builder reuses vectors by stable evidence ID and embeds
+only new or changed chunks; removed evidence is omitted. Semantic search rejects a
+stale or checksum-invalid index until that atomic rebuild completes.
 
 Hybrid search requests up to 60 candidates from both SQLite FTS5 and the persistent
 semantic index, then applies equal-weight reciprocal-rank fusion with `k=60`.
@@ -136,6 +170,71 @@ corpusdock embed --allow-model-download --device cuda
 corpusdock search "how teams preserve operational knowledge" \
   --retrieval hybrid --device cuda
 ```
+
+### Evidence-grounded local analysis
+
+CorpusDock can turn exact retrieval chunks into reviewable concept mentions, claims,
+stance, and relations without sending passages to a hosted model. The portable
+Transformers runtime works on CPU or CUDA; the optional vLLM runtime provides the
+selected high-throughput NVIDIA path.
+
+Install vLLM and first run the public regression gate:
+
+```bash
+uv sync --extra analysis-vllm
+corpusdock analysis-eval benchmarks/analysis-v1/cases.json \
+  --analysis-runtime vllm --allow-model-download \
+  --device cuda --dtype bfloat16 --json
+```
+
+The measured default is `Qwen/Qwen3.5-4B` in BF16. CorpusDock resolves an immutable
+model revision, requires safetensors-only weights, rejects repositories containing
+Python or `auto_map` hooks, loads with `trust_remote_code=False`, disables thinking
+and stochastic sampling, and validates every candidate against exact local evidence.
+The first explicit download fetches public model files only. When downloads are not
+explicitly allowed, CorpusDock forces the registry offline and disables vLLM usage
+telemetry.
+
+After the public gate passes, run a bounded pilot and then start full-corpus
+analysis:
+
+```bash
+corpusdock analyze --analysis-runtime vllm --device cuda \
+  --dtype bfloat16 --limit 12 --json
+corpusdock analyze --analysis-runtime vllm --device cuda \
+  --dtype bfloat16 --json
+corpusdock doctor --json
+```
+
+The pilot and full-corpus scopes are distinct runs. Repeating either command resumes
+when its selection, prompt, and stable extractor configuration match. Stable evidence
+that remains in the corpus is reused even when books were added, removed, changed, or
+moved between resumes; only newly selected evidence is sent through the local model.
+Each completed batch is committed atomically. Change `--no-resume` to start a distinct
+run. `corpusdock doctor --json` reports the latest run's exact scope, status, and
+committed progress without exposing document content. vLLM defaults to a
+cache-safe maximum batch of 16. Larger GPUs can opt into 32, while smaller GPUs can
+reduce `--analysis-batch-size` or `--vllm-gpu-memory-utilization`. The selected RTX
+5080 public profile processed its nine requests in one 17.23-second batch while
+preserving a `1.0` valid and fully grounded response rate.
+
+Analysis lives in ignored `.corpusdock/analysis.sqlite3`. It stores candidate labels,
+standalone propositions, typed relations, review state, evidence IDs, chunk-relative
+support offsets, and support hashes. The model cites local SaT evidence-unit IDs;
+deterministic code converts them to continuous exact spans. The database intentionally
+stores no source paths, excerpts, raw model output, or prompts. Claims preserve
+polarity, certainty, conditionality, attribution, and normative force so disagreement
+is retained rather than silently reconciled. Candidate IDs and anchors prepare the
+next phase—cross-evidence concept resolution and graph querying—but candidates are
+not accepted facts until reviewed.
+
+For the portable fallback, install `.[analysis]` and omit
+`--analysis-runtime vllm`. Transformers also supports the optional
+`.[analysis,analysis-cuda]` bitsandbytes bakeoff path. Neither dynamic vLLM FP8 nor a
+larger 9B NF4 model beat the selected BF16 profile on the versioned quality gate, so
+faster or larger configurations are not selected at the expense of fidelity. See the
+[analysis benchmark and model decision](benchmarks/analysis-v1/README.md) for exact
+revisions, gates, measurements, limitations, and reproduction commands.
 
 ## Retrieval evaluation
 

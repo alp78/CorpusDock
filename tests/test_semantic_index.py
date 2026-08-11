@@ -24,6 +24,7 @@ from corpusdock.semantic_index import (
     PersistentSemanticSearchBackend,
     SemanticIndexError,
     build_semantic_index,
+    prune_semantic_index_cache,
     read_semantic_index_descriptor,
     semantic_index_path_for,
     semantic_index_status_report,
@@ -36,6 +37,7 @@ BENCHMARK_ROOT = Path(__file__).parents[1] / "benchmarks" / "retrieval-v1"
 
 class _FixtureEmbeddingProvider:
     def __init__(self) -> None:
+        self.document_batches: list[tuple[str, ...]] = []
         self.info = EmbeddingModelInfo(
             provider="fixture",
             runtime="fixture-runtime",
@@ -58,6 +60,7 @@ class _FixtureEmbeddingProvider:
         )
 
     def embed_documents(self, texts):  # type: ignore[no-untyped-def]
+        self.document_batches.append(tuple(texts))
         return [self._document_vector(text) for text in texts]
 
     def embed_queries(self, texts):  # type: ignore[no-untyped-def]
@@ -197,6 +200,15 @@ def test_semantic_index_build_is_atomic_when_new_vectors_are_invalid(
         def embed_documents(self, texts):  # type: ignore[no-untyped-def]
             return [[0.0, 0.0, 0.0] for _ in texts]
 
+    additional = tmp_path / "additional.txt"
+    additional.write_text(
+        "Additional workshop\nThe additional workshop calibrates its tools locally.\n",
+        encoding="utf-8",
+    )
+    registration = ManifestStore(project_root).register((additional,))[0]
+    _process_registration(project_root, registration)
+    build_search_index(project_root)
+
     with pytest.raises(EmbeddingError, match="zero-length"):
         build_semantic_index(project_root, _ZeroProvider())
 
@@ -257,7 +269,11 @@ def test_semantic_index_rejects_model_mismatch_staleness_and_corruption(
             SQLiteSearchBackend(project_root), _FixtureEmbeddingProvider()
         )
 
-    build_semantic_index(project_root, _FixtureEmbeddingProvider())
+    incremental = _FixtureEmbeddingProvider()
+    rebuilt = build_semantic_index(project_root, incremental)
+    assert [len(batch) for batch in incremental.document_batches] == [1]
+    assert rebuilt.build["embedded_documents"] == 1
+    assert rebuilt.build["reused_documents"] == 3
     path = semantic_index_path_for(project_root)
     with sqlite3.connect(path) as connection:
         vector = connection.execute(
@@ -387,3 +403,23 @@ def test_semantic_index_status_is_optional_when_missing(tmp_path: Path) -> None:
     _build_benchmark(project_root)
 
     assert semantic_index_status_report(project_root)["status"] == "missing"
+
+
+def test_semantic_cache_prunes_removed_evidence_and_reuses_every_retained_vector(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    _build_benchmark(project_root)
+    build_semantic_index(project_root, _FixtureEmbeddingProvider())
+    retained_paths = tuple(sorted((BENCHMARK_ROOT / "corpus").glob("*.txt")))[1:]
+    ManifestStore(project_root).reconcile_mirror(retained_paths)
+    build_search_index(project_root)
+
+    assert prune_semantic_index_cache(project_root) == 1
+    assert read_semantic_index_descriptor(project_root).indexed_chunks == 2
+    provider = _FixtureEmbeddingProvider()
+    descriptor = build_semantic_index(project_root, provider)
+
+    assert provider.document_batches == []
+    assert descriptor.build["embedded_documents"] == 0
+    assert descriptor.build["reused_documents"] == 2

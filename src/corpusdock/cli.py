@@ -3,13 +3,37 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import sys
 
 from corpusdock import __version__
+from corpusdock.analysis_evaluation import (
+    AnalysisEvaluationError,
+    evaluate_analysis_benchmark,
+    load_analysis_benchmark,
+)
+from corpusdock.analysis_models import (
+    DEFAULT_ANALYSIS_BATCH_SIZE,
+    DEFAULT_ANALYSIS_MAX_INPUT_TOKENS,
+    DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS,
+    DEFAULT_ANALYSIS_MODEL,
+    MAX_ANALYSIS_BATCH_SIZE,
+    AnalysisModelError,
+    StructuredExtractionProvider,
+    TransformersStructuredExtractionProvider,
+)
+from corpusdock.analysis_runner import run_corpus_analysis
+from corpusdock.analysis_store import AnalysisStoreError, analysis_status_report
+from corpusdock.analysis_vllm import (
+    DEFAULT_VLLM_ANALYSIS_BATCH_SIZE,
+    DEFAULT_VLLM_GPU_MEMORY_UTILIZATION,
+    VLLMStructuredExtractionProvider,
+    _configure_vllm_environment,
+)
 from corpusdock.chunking import (
     DEFAULT_MAX_CHARACTERS,
     DEFAULT_OVERLAP_SENTENCES,
@@ -63,6 +87,13 @@ from corpusdock.semantic_index import (
     build_semantic_index,
     read_current_semantic_index_descriptor,
     semantic_index_status_report,
+)
+from corpusdock.synchronization import (
+    PipelineConfig,
+    SynchronizationSummary,
+    configure_input_mirror,
+    load_pipeline_config,
+    synchronize_input_mirror,
 )
 
 
@@ -119,6 +150,119 @@ def _add_embedding_options(
             type=int,
             help="Optional output dimension for a model trained to support truncation.",
         )
+
+
+def _add_analysis_model_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--analysis-runtime",
+        choices=("transformers", "vllm"),
+        default="transformers",
+        help=(
+            "Local inference runtime: portable Transformers (default) or "
+            "high-throughput CUDA vLLM."
+        ),
+    )
+    parser.add_argument(
+        "--analysis-model",
+        default=DEFAULT_ANALYSIS_MODEL,
+        help=(
+            "Local directory or namespace/model ID "
+            f"(default: {DEFAULT_ANALYSIS_MODEL})."
+        ),
+    )
+    parser.add_argument(
+        "--model-revision",
+        help="Optional model commit, tag, or branch; the resolved revision is reported.",
+    )
+    parser.add_argument(
+        "--model-cache",
+        help="Model cache directory (default: the project's ignored model cache).",
+    )
+    parser.add_argument(
+        "--allow-model-download",
+        action="store_true",
+        help="Explicitly permit downloading public model weights; document text is never uploaded.",
+    )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Local inference device understood by PyTorch (default: cpu).",
+    )
+    parser.add_argument(
+        "--dtype",
+        choices=("auto", "float32", "float16", "bfloat16"),
+        default="auto",
+        help="Local model parameter dtype (default: model configuration).",
+    )
+    parser.add_argument(
+        "--quantization",
+        choices=("none", "bnb-4bit", "bnb-8bit"),
+        default="none",
+        help="Optional Transformers CUDA weight quantization (default: none).",
+    )
+    parser.add_argument(
+        "--structured-output",
+        choices=("json-schema", "prompt-only"),
+        default="json-schema",
+        help="Local output constraint mode (default: JSON Schema enforcement).",
+    )
+    parser.add_argument(
+        "--support-unit-processor",
+        choices=("sat", "rule"),
+        default="sat",
+        help=(
+            "Local sentence processor for exact analysis support units: "
+            "quality-first SaT (default) or the rule fallback."
+        ),
+    )
+    parser.add_argument(
+        "--support-unit-model",
+        default=DEFAULT_SENTENCE_MODEL,
+        help=f"Local SaT support-unit model (default: {DEFAULT_SENTENCE_MODEL}).",
+    )
+    parser.add_argument(
+        "--analysis-batch-size",
+        type=int,
+        default=None,
+        help=(
+            f"Generation batch size from 1 to {MAX_ANALYSIS_BATCH_SIZE} "
+            f"(default: {DEFAULT_ANALYSIS_BATCH_SIZE} for Transformers, "
+            f"{DEFAULT_VLLM_ANALYSIS_BATCH_SIZE} for vLLM)."
+        ),
+    )
+    parser.add_argument(
+        "--vllm-gpu-memory-utilization",
+        type=float,
+        default=DEFAULT_VLLM_GPU_MEMORY_UTILIZATION,
+        help=(
+            "Fraction of local GPU memory available to vLLM "
+            f"(default: {DEFAULT_VLLM_GPU_MEMORY_UTILIZATION})."
+        ),
+    )
+    parser.add_argument(
+        "--max-input-tokens",
+        type=int,
+        default=DEFAULT_ANALYSIS_MAX_INPUT_TOKENS,
+        help=(
+            "Maximum local prompt tokens per evidence chunk "
+            f"(default: {DEFAULT_ANALYSIS_MAX_INPUT_TOKENS})."
+        ),
+    )
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS,
+        help=(
+            "Maximum generated tokens per evidence chunk "
+            f"(default: {DEFAULT_ANALYSIS_MAX_OUTPUT_TOKENS})."
+        ),
+    )
+    parser.add_argument(
+        "--prompt-style",
+        choices=("auto", "chat", "nuextract3"),
+        default="auto",
+        help="Structured extraction prompt adapter (default: detect from model).",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -194,6 +338,62 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit registration, extraction, and chunk summaries as JSON.",
     )
     ingest_parser.set_defaults(handler=_register_sources)
+
+    sync_parser = commands.add_parser(
+        "sync",
+        help="Mirror one local input directory into resumable project state.",
+    )
+    sync_parser.add_argument(
+        "input",
+        help="Authoritative directory scanned recursively for supported documents.",
+    )
+    sync_parser.add_argument(
+        "--project",
+        help="Initialized CorpusDock project directory (defaults to the nearest project).",
+    )
+    sync_parser.add_argument(
+        "--configure-only",
+        action="store_true",
+        help="Remember the input directory for future resumes without scanning it now.",
+    )
+    sync_parser.add_argument(
+        "--sentence-processor",
+        choices=("sat", "rule"),
+        default="sat",
+        help=(
+            "Local sentence processor: quality-first SaT (default) or the "
+            "dependency-free rule fallback."
+        ),
+    )
+    sync_parser.add_argument(
+        "--sentence-model",
+        default=DEFAULT_SENTENCE_MODEL,
+        help=f"Local SaT model name or directory (default: {DEFAULT_SENTENCE_MODEL}).",
+    )
+    sync_parser.add_argument(
+        "--target-characters",
+        type=int,
+        default=DEFAULT_TARGET_CHARACTERS,
+        help=f"Soft chunk target in Unicode code points (default: {DEFAULT_TARGET_CHARACTERS}).",
+    )
+    sync_parser.add_argument(
+        "--max-characters",
+        type=int,
+        default=DEFAULT_MAX_CHARACTERS,
+        help=f"Hard chunk maximum in Unicode code points (default: {DEFAULT_MAX_CHARACTERS}).",
+    )
+    sync_parser.add_argument(
+        "--overlap-sentences",
+        type=int,
+        default=DEFAULT_OVERLAP_SENTENCES,
+        help=f"Whole-sentence overlap between chunks (default: {DEFAULT_OVERLAP_SENTENCES}).",
+    )
+    sync_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a non-content synchronization summary as JSON.",
+    )
+    sync_parser.set_defaults(handler=_sync_sources)
 
     index_parser = commands.add_parser(
         "index", help="Build the embedded full-text index from persisted chunks."
@@ -303,6 +503,65 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eval_parser.set_defaults(handler=_evaluate_retrieval)
 
+    analyze_parser = commands.add_parser(
+        "analyze",
+        help="Extract grounded concept, claim, and relation candidates locally.",
+    )
+    analyze_parser.add_argument(
+        "--project",
+        help="Initialized CorpusDock project directory (defaults to the nearest project).",
+    )
+    analyze_parser.add_argument(
+        "--input",
+        help=(
+            "Authoritative input directory to remember and synchronize before local "
+            "model loading. A previously configured directory is scanned by default."
+        ),
+    )
+    analyze_parser.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Restrict analysis to one source ID; repeat to select multiple sources.",
+    )
+    analyze_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Analyze at most this many exact evidence chunks in stable index order.",
+    )
+    analyze_parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Start a new run instead of resuming a matching incomplete run.",
+    )
+    _add_analysis_model_options(analyze_parser)
+    analyze_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit non-content run provenance and aggregate counts as JSON.",
+    )
+    analyze_parser.set_defaults(handler=_analyze_sources)
+
+    analysis_eval_parser = commands.add_parser(
+        "analysis-eval",
+        help="Benchmark a local structured-extraction model on public fixtures.",
+    )
+    analysis_eval_parser.add_argument(
+        "dataset", help="Versioned analysis benchmark JSON file."
+    )
+    analysis_eval_parser.add_argument(
+        "--project",
+        help=(
+            "Initialized CorpusDock project used only for its ignored model cache "
+            "(defaults to the nearest project)."
+        ),
+    )
+    _add_analysis_model_options(analysis_eval_parser)
+    analysis_eval_parser.add_argument(
+        "--json", action="store_true", help="Emit the non-content benchmark report."
+    )
+    analysis_eval_parser.set_defaults(handler=_evaluate_analysis)
+
     source_parser = commands.add_parser("source", help="Inspect a registered source.")
     source_parser.add_argument("source_id", help="Stable CorpusDock source ID.")
     source_parser.add_argument(
@@ -372,6 +631,40 @@ def _build_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sync_sources(args: argparse.Namespace) -> int:
+    project_root = _resolve_project_root(args.project)
+    config = configure_input_mirror(
+        project_root,
+        args.input,
+        sentence_processor=args.sentence_processor,
+        sentence_model=args.sentence_model,
+        target_characters=args.target_characters,
+        max_characters=args.max_characters,
+        overlap_sentences=args.overlap_sentences,
+    )
+    if args.configure_only:
+        payload = {"configured": True, **config.to_dict()}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print(f"Configured authoritative input mirror: {config.input_root}")
+            print("No documents were scanned or processed.")
+        return 0
+
+    summary = synchronize_input_mirror(
+        project_root,
+        config,
+        progress=_sync_progress_callback(enabled=not args.json),
+    )
+    if args.json:
+        print(
+            json.dumps(summary.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+        )
+    else:
+        _print_sync_summary(summary)
+    return 1 if summary.failed_sources else 0
+
+
 def _build_semantic_index(args: argparse.Namespace) -> int:
     project_root = _resolve_project_root(args.project)
     if not SQLiteSearchBackend(project_root).corpus_snapshot().evidence:
@@ -400,8 +693,10 @@ def _build_semantic_index(args: argparse.Namespace) -> int:
 
     embedding = descriptor.embedding
     print(
-        f"Embedded {descriptor.indexed_chunks} chunks at "
-        f"{descriptor.dimension} dimensions."
+        f"Semantic index: {descriptor.indexed_chunks} chunks at "
+        f"{descriptor.dimension} dimensions; "
+        f"{int(descriptor.build['embedded_documents'])} embedded, "
+        f"{int(descriptor.build['reused_documents'])} reused."
     )
     print(f"Model: {descriptor.model_id} @ {descriptor.model_revision}")
     print(
@@ -613,6 +908,170 @@ def _evaluate_retrieval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _analysis_provider(
+    project_root: Path, args: argparse.Namespace
+) -> StructuredExtractionProvider:
+    if not args.allow_model_download:
+        # The command-line flag is the sole download authority. An inherited
+        # environment value must never silently broaden it before SaT is loaded.
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    if args.analysis_runtime == "vllm":
+        _configure_vllm_environment(offline=not args.allow_model_download)
+    support_unit_processor = sentence_processor_from(
+        args.support_unit_processor,
+        model_name=args.support_unit_model,
+    )
+    if args.analysis_runtime == "vllm":
+        if args.quantization != "none":
+            raise AnalysisModelError(
+                "analysis_vllm_quantization_invalid",
+                "The vLLM runtime does not use Transformers bitsandbytes options; "
+                "set --quantization none.",
+            )
+        return VLLMStructuredExtractionProvider(
+            args.analysis_model,
+            revision=args.model_revision,
+            cache_dir=args.model_cache or model_cache_dir_for(project_root),
+            allow_download=args.allow_model_download,
+            device=args.device,
+            dtype=args.dtype,
+            structured_output=args.structured_output,
+            batch_size=(
+                args.analysis_batch_size
+                if args.analysis_batch_size is not None
+                else DEFAULT_VLLM_ANALYSIS_BATCH_SIZE
+            ),
+            max_input_tokens=args.max_input_tokens,
+            max_output_tokens=args.max_output_tokens,
+            prompt_style=args.prompt_style,
+            support_unit_processor=support_unit_processor,
+            gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+        )
+    return TransformersStructuredExtractionProvider(
+        args.analysis_model,
+        revision=args.model_revision,
+        cache_dir=args.model_cache or model_cache_dir_for(project_root),
+        allow_download=args.allow_model_download,
+        device=args.device,
+        dtype=args.dtype,
+        quantization=args.quantization,
+        structured_output=args.structured_output,
+        batch_size=(
+            args.analysis_batch_size
+            if args.analysis_batch_size is not None
+            else DEFAULT_ANALYSIS_BATCH_SIZE
+        ),
+        max_input_tokens=args.max_input_tokens,
+        max_output_tokens=args.max_output_tokens,
+        prompt_style=args.prompt_style,
+        support_unit_processor=support_unit_processor,
+    )
+
+
+def _analyze_sources(args: argparse.Namespace) -> int:
+    project_root = _resolve_project_root(args.project)
+    _synchronize_before_analysis(project_root, args)
+    if not SQLiteSearchBackend(project_root).corpus_snapshot().evidence:
+        raise AnalysisStoreError(
+            "analysis_scope_empty",
+            "The synchronized exact index contains no evidence chunks to analyze.",
+        )
+    provider = _analysis_provider(project_root, args)
+    progress = None
+    if not args.json:
+        last_reported = [-1]
+
+        def report_progress(done: int, total: int, descriptor: object) -> None:
+            interval = max(1, total // 20)
+            if done in {0, total} or done // interval > last_reported[0] // interval:
+                print(
+                    f"Analysis progress: {done}/{total} evidence chunks",
+                    file=sys.stderr,
+                )
+                last_reported[0] = done
+
+        progress = report_progress
+    descriptor = run_corpus_analysis(
+        str(project_root),
+        provider,
+        source_ids=args.source,
+        limit=args.limit,
+        resume=not args.no_resume,
+        progress=progress,
+    )
+    if args.json:
+        print(
+            json.dumps(
+                descriptor.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+            )
+        )
+        return 0
+    print(f"Analysis run: {descriptor.run_id} ({descriptor.status})")
+    print(
+        f"Evidence: {descriptor.analyzed_evidence}; "
+        f"{descriptor.accepted_evidence} accepted, "
+        f"{descriptor.partial_evidence} partial, "
+        f"{descriptor.empty_evidence} empty, "
+        f"{descriptor.rejected_evidence} rejected"
+    )
+    print(
+        f"Candidates: {descriptor.concepts} concepts, "
+        f"{descriptor.claims} claims, {descriptor.relations} relations; "
+        f"{descriptor.rejected_candidates} rejected during validation"
+    )
+    print(
+        f"Generation: {descriptor.output_tokens} tokens; "
+        f"{descriptor.truncated_evidence} truncated responses"
+    )
+    print(f"Inference: {descriptor.inference_ms:.3f} ms")
+    print(f"Analysis database: {descriptor.path}")
+    return 0
+
+
+def _evaluate_analysis(args: argparse.Namespace) -> int:
+    project_root = _resolve_project_root(args.project)
+    benchmark = load_analysis_benchmark(args.dataset)
+    provider = _analysis_provider(project_root, args)
+    report = evaluate_analysis_benchmark(benchmark, provider)
+    payload = report.to_dict()
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    summary = payload["summary"]
+    assert isinstance(summary, dict)
+    print(f"Benchmark: {benchmark.benchmark_id} ({len(benchmark.cases)} cases)")
+    print(
+        f"Model: {provider.info.model_id} @ {provider.info.model_revision}; "
+        f"{provider.info.device}; {provider.info.dtype}"
+    )
+    print(f"Valid responses: {float(summary['valid_response_rate']):.3f}")
+    print(
+        "Fully grounded responses: "
+        f"{float(summary['fully_grounded_response_rate']):.3f}"
+    )
+    print(f"Exact cases: {float(summary['exact_case_rate']):.3f}")
+    print(f"Macro candidate F1: {float(summary['macro_candidate_f1']):.3f}")
+    for category in ("concepts", "claims", "relations"):
+        metrics = summary[category]
+        assert isinstance(metrics, dict)
+        print(
+            f"{category.title()}: precision {float(metrics['precision']):.3f}; "
+            f"recall {float(metrics['recall']):.3f}; "
+            f"F1 {float(metrics['f1']):.3f}"
+        )
+    latency = summary["latency_ms"]
+    assert isinstance(latency, dict)
+    print(
+        f"Inference latency: p50 {float(latency['p50']):.3f} ms; "
+        f"p95 {float(latency['p95']):.3f} ms"
+    )
+    peak = provider.info.accelerator_peak_memory_allocated_bytes
+    if peak is not None:
+        print(f"Accelerator peak allocated memory: {peak} bytes")
+    return 0
+
+
 def _verify_evidence(args: argparse.Namespace) -> int:
     project_root = _resolve_project_root(args.project)
     report = SQLiteSearchBackend(project_root).verify(args.evidence_id)
@@ -815,11 +1274,13 @@ def _report_coverage(args: argparse.Namespace) -> int:
     chunk_report = chunk_coverage_report(project_root, manifest.sources.values())
     search_index_report = index_status_report(project_root)
     semantic_index_report = semantic_index_status_report(project_root)
+    derived_analysis_report = analysis_status_report(project_root)
     report = {
         "extraction": extraction_report,
         "chunking": chunk_report,
         "index": search_index_report,
         "semantic_index": semantic_index_report,
+        "analysis": derived_analysis_report,
     }
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
@@ -866,12 +1327,34 @@ def _report_coverage(args: argparse.Namespace) -> int:
             )
         else:
             print(f"Semantic index: {semantic_index_report['status']}")
+        if derived_analysis_report["status"] == "ready":
+            print(
+                "Derived analysis: ready; "
+                f"{derived_analysis_report['analyzed_evidence_records']} evidence records; "
+                f"{derived_analysis_report['claims']} claims; "
+                f"{derived_analysis_report['relations']} relations"
+            )
+            latest_run = derived_analysis_report.get("latest_run")
+            if isinstance(latest_run, dict):
+                counts = latest_run.get("counts", {})
+                scope = latest_run.get("scope", {})
+                if isinstance(counts, dict) and isinstance(scope, dict):
+                    print(
+                        "Latest analysis run: "
+                        f"{latest_run.get('status')}; "
+                        f"{counts.get('analyzed_evidence', 0)}/"
+                        f"{scope.get('selected_evidence', '?')} evidence chunks; "
+                        f"{latest_run.get('run_id')}"
+                    )
+        else:
+            print(f"Derived analysis: {derived_analysis_report['status']}")
     unhealthy = ("failed", "pending", "stale")
     return (
         1
         if (
             search_index_report["status"] != "ready"
             or semantic_index_report["status"] not in {"missing", "ready"}
+            or derived_analysis_report["status"] not in {"missing", "ready"}
             or any(
                 report_part["statuses"][status]
                 for report_part in (extraction_report, chunk_report)
@@ -879,6 +1362,71 @@ def _report_coverage(args: argparse.Namespace) -> int:
             )
         )
         else 0
+    )
+
+
+def _synchronize_before_analysis(
+    project_root: Path, args: argparse.Namespace
+) -> SynchronizationSummary | None:
+    config = load_pipeline_config(project_root)
+    if args.input is not None:
+        settings = config or PipelineConfig(input_root=str(args.input))
+        config = configure_input_mirror(
+            project_root,
+            args.input,
+            sentence_processor=settings.sentence_processor,
+            sentence_model=settings.sentence_model,
+            target_characters=settings.target_characters,
+            max_characters=settings.max_characters,
+            overlap_sentences=settings.overlap_sentences,
+        )
+    if config is None:
+        return None
+    summary = synchronize_input_mirror(
+        project_root,
+        config,
+        progress=_sync_progress_callback(enabled=not args.json),
+    )
+    if not args.json:
+        _print_sync_summary(summary, file=sys.stderr)
+    return summary
+
+
+def _sync_progress_callback(*, enabled: bool) -> Callable[[str, int, int], None] | None:
+    if not enabled:
+        return None
+    last_reported = [-1]
+
+    def report(stage: str, done: int, total: int) -> None:
+        interval = max(1, total // 20)
+        if done in {0, total} or done // interval > last_reported[0] // interval:
+            print(f"Input {stage}: {done}/{total} sources", file=sys.stderr)
+            last_reported[0] = done
+
+    return report
+
+
+def _print_sync_summary(
+    summary: SynchronizationSummary, *, file: object | None = None
+) -> None:
+    output = file or sys.stdout
+    print(
+        f"Input scan: {summary.scanned_paths} files, "
+        f"{summary.unique_sources} unique sources; "
+        f"{summary.added_sources} added, {summary.removed_sources} removed.",
+        file=output,
+    )
+    print(
+        f"Extraction: {summary.extracted_sources} processed, "
+        f"{summary.reused_extractions} reused; "
+        f"chunking: {summary.chunked_sources} processed, "
+        f"{summary.reused_chunks} reused.",
+        file=output,
+    )
+    print(
+        f"Exact index: {'rebuilt' if summary.exact_index_rebuilt else 'reused'}; "
+        f"{summary.indexed_chunks} chunks.",
+        file=output,
     )
 
 
@@ -914,6 +1462,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         EvaluationError,
         EmbeddingError,
         SemanticIndexError,
+        AnalysisModelError,
+        AnalysisStoreError,
+        AnalysisEvaluationError,
     ) as error:
         print(f"corpusdock: error: {error}", file=sys.stderr)
         return 1

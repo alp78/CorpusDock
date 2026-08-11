@@ -84,6 +84,43 @@ def test_duplicate_content_keeps_one_source_id_and_all_registered_paths(
     )
 
 
+def test_mirror_reconciliation_is_content_idempotent_and_prunes_absent_sources(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    project_root = tmp_path / "corpus"
+    mirror = tmp_path / "documents"
+    mirror.mkdir()
+    retained = mirror / "retained.txt"
+    removed = mirror / "removed.txt"
+    retained.write_text("Stable content.\n", encoding="utf-8")
+    removed.write_text("Content to remove.\n", encoding="utf-8")
+    store = _store(project_root)
+
+    first = store.reconcile_mirror(discover_source_files(mirror))
+    retained_id = source_id_for(sha256(retained.read_bytes()).hexdigest())
+    removed_id = source_id_for(sha256(removed.read_bytes()).hexdigest())
+    assert set(first.added_source_ids) == {retained_id, removed_id}
+
+    moved = mirror / "nested" / "renamed.txt"
+    moved.parent.mkdir()
+    retained.rename(moved)
+    removed.unlink()
+    added = mirror / "added.txt"
+    added.write_text("New content.\n", encoding="utf-8")
+    second = store.reconcile_mirror(discover_source_files(mirror))
+    repeated = store.reconcile_mirror(discover_source_files(mirror))
+
+    assert second.removed_source_ids == (removed_id,)
+    assert second.added_source_ids == (
+        source_id_for(sha256(added.read_bytes()).hexdigest()),
+    )
+    assert retained_id in second.retained_source_ids
+    assert store.load().sources[retained_id].original_paths == (str(moved.resolve()),)
+    assert repeated.changed is False
+    assert repeated.added_source_ids == ()
+    assert repeated.removed_source_ids == ()
+
+
 @pytest.mark.parametrize(
     ("filename", "expected_format"),
     [

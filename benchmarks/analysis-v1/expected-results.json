@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "dataset_sha256": "1c7fef3107d084080984f6f7f7fc61285840ab4089cad0b2a539e4c3b0c9b9b9",
+  "analysis_contract_schema_version": 3,
+  "selected_profile": {
+    "model_id": "Qwen/Qwen3.5-4B",
+    "model_revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+    "prompt_version": "analysis-extraction-v17",
+    "prompt_sha256": "df4deb733d6f6d5da2b682f80c2f783084a10b449f620de345b4c20b37578790",
+    "runtime": "vllm",
+    "runtime_version": "0.27.1",
+    "structured_output_backend": "xgrammar",
+    "structured_output_runtime_version": "0.2.3",
+    "sampling_backend": "vllm-native",
+    "prefix_caching_enabled": true,
+    "support_unit_processor": "wtpsplit-lite.SaT",
+    "support_unit_model": "sat-12l-sm",
+    "dtype": "bfloat16",
+    "quantization": "none",
+    "batch_size": 16,
+    "max_input_tokens": 4096,
+    "max_output_tokens": 2048
+  },
+  "quality_gates": {
+    "valid_response_rate": 1.0,
+    "accepted_candidate_rate": 0.95,
+    "fully_grounded_response_rate": 0.95,
+    "macro_candidate_f1": 0.55,
+    "claims_f1": 0.5,
+    "concepts_f1": 0.7,
+    "relations_f1": 0.35
+  },
+  "observed": {
+    "valid_response_rate": 1.0,
+    "accepted_candidate_rate": 1.0,
+    "fully_grounded_response_rate": 1.0,
+    "macro_candidate_f1": 0.618132,
+    "claims_f1": 0.583333,
+    "concepts_f1": 0.809524,
+    "relations_f1": 0.461538,
+    "exact_case_rate": 0.333333
+  },
+  "resource_observation": {
+    "accelerator": "NVIDIA GeForce RTX 5080",
+    "accelerator_runtime": "CUDA 13.0",
+    "framework": "PyTorch 2.13.0+cu130",
+    "runtime": "vLLM 0.27.1",
+    "structured_output": "xgrammar 0.2.3",
+    "output_tokens": 3865,
+    "load_ms": 19627.810813,
+    "inference_total_ms": 17232.415317,
+    "apportioned_per_item_p50_ms": 1914.712813
+  },
+  "comparison_profiles": [
+    {
+      "runtime": "transformers",
+      "dtype": "bfloat16",
+      "batch_size": 3,
+      "macro_candidate_f1": 0.581746,
+      "fully_grounded_response_rate": 1.0,
+      "inference_total_ms": 146864.58,
+      "decision": "Portable fallback; lower public fidelity and approximately 8.5 times slower on the measured GPU."
+    },
+    {
+      "runtime": "vllm",
+      "quantization": "fp8",
+      "batch_size": 32,
+      "macro_candidate_f1": 0.594877,
+      "fully_grounded_response_rate": 1.0,
+      "inference_total_ms": 12685.575987,
+      "decision": "Rejected as the default because its speed gain added false-positive concepts and relations and reduced aggregate fidelity."
+    }
+  ]
+}

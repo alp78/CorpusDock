@@ -482,6 +482,58 @@ def load_chunk_artifact(
     return payload
 
 
+def chunk_artifact_is_current(
+    artifact: object,
+    source: SourceRecord,
+    *,
+    sentence_processor_name: str,
+    sentence_processor_version: str,
+    sentence_model: str,
+    target_characters: int = DEFAULT_TARGET_CHARACTERS,
+    max_characters: int = DEFAULT_MAX_CHARACTERS,
+    overlap_sentences: int = DEFAULT_OVERLAP_SENTENCES,
+) -> bool:
+    """Return whether a chunk artifact exactly matches its derivation settings."""
+
+    if not isinstance(artifact, dict):
+        return False
+    chunker = artifact.get("chunker")
+    if not isinstance(chunker, dict):
+        return False
+    return (
+        artifact.get("schema_version") == CHUNK_SCHEMA_VERSION
+        and artifact.get("source_id") == source.source_id
+        and artifact.get("source_sha256") == source.sha256
+        and artifact.get("status") in {"complete", "partial", "failed"}
+        and chunker.get("name") == "corpusdock.anchor_sentence"
+        and chunker.get("version") == __version__
+        and chunker.get("sentence_processor") == sentence_processor_name
+        and chunker.get("sentence_processor_version") == sentence_processor_version
+        and chunker.get("sentence_model") == sentence_model
+        and chunker.get("target_characters") == target_characters
+        and chunker.get("max_characters") == max_characters
+        and chunker.get("overlap_sentences") == overlap_sentences
+    )
+
+
+def sentence_processor_identity(
+    name: str, *, model_name: str = DEFAULT_SENTENCE_MODEL
+) -> tuple[str, str, str]:
+    """Return requested splitter provenance without loading its inference model."""
+
+    if name == "rule":
+        return RuleSentenceProcessor.name, RuleSentenceProcessor.version, "none"
+    if name == "sat":
+        try:
+            processor_version = package_version("wtpsplit-lite")
+        except PackageNotFoundError:
+            processor_version = "unknown"
+        return SaTSentenceProcessor.name, processor_version, model_name
+    raise ChunkingError(
+        "sentence_processor_unknown", f"Unknown sentence processor '{name}'."
+    )
+
+
 def chunk_coverage_report(
     project_root: Path | str, sources: Iterable[SourceRecord]
 ) -> dict[str, Any]:

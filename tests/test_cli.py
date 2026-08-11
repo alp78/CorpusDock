@@ -5,8 +5,11 @@ import json
 
 import pytest
 
-from corpusdock.cli import build_parser, main
+from corpusdock.analysis_models import AnalysisModelError
+from corpusdock.cli import _analysis_provider, build_parser, main
 from corpusdock.embeddings import DEFAULT_EMBEDDING_MODEL
+from corpusdock.manifest import ManifestStore
+from corpusdock.retrieval import index_status_report
 
 
 def test_search_parser_accepts_json_output() -> None:
@@ -106,11 +109,157 @@ def test_search_and_eval_parsers_accept_hybrid_retrieval() -> None:
     assert evaluate.embedding_model is None
 
 
+def test_analysis_parsers_accept_local_cuda_options() -> None:
+    analyze = build_parser().parse_args(
+        [
+            "analyze",
+            "--analysis-model",
+            "numind/NuExtract3",
+            "--model-revision",
+            "a" * 40,
+            "--source",
+            "src-" + "b" * 64,
+            "--limit",
+            "12",
+            "--device",
+            "cuda",
+            "--dtype",
+            "bfloat16",
+            "--quantization",
+            "bnb-4bit",
+            "--structured-output",
+            "json-schema",
+            "--analysis-batch-size",
+            "2",
+            "--no-resume",
+            "--json",
+        ]
+    )
+    evaluate = build_parser().parse_args(
+        ["analysis-eval", "cases.json", "--device", "cuda", "--json"]
+    )
+
+    assert analyze.analysis_model == "numind/NuExtract3"
+    assert analyze.model_revision == "a" * 40
+    assert analyze.limit == 12
+    assert analyze.device == "cuda"
+    assert analyze.dtype == "bfloat16"
+    assert analyze.quantization == "bnb-4bit"
+    assert analyze.structured_output == "json-schema"
+    assert analyze.support_unit_processor == "sat"
+    assert analyze.support_unit_model == "sat-12l-sm"
+    assert analyze.analysis_batch_size == 2
+    assert analyze.no_resume is True
+    assert evaluate.dataset == "cases.json"
+    assert evaluate.device == "cuda"
+
+
+def test_analysis_parser_accepts_high_throughput_vllm_runtime() -> None:
+    args = build_parser().parse_args(
+        [
+            "analyze",
+            "--analysis-runtime",
+            "vllm",
+            "--device",
+            "cuda",
+            "--vllm-gpu-memory-utilization",
+            "0.85",
+        ]
+    )
+
+    assert args.analysis_runtime == "vllm"
+    assert args.analysis_batch_size is None
+    assert args.vllm_gpu_memory_utilization == 0.85
+
+
+def test_vllm_cli_forces_offline_mode_and_uses_cache_safe_default(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
+) -> None:
+    args = build_parser().parse_args(
+        ["analyze", "--analysis-runtime", "vllm", "--device", "cuda"]
+    )
+    captured = {}
+    unit_processor = object()
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "0")
+    monkeypatch.setattr(
+        "corpusdock.cli.sentence_processor_from",
+        lambda *_args, **_kwargs: unit_processor,
+    )
+
+    def fake_provider(*provider_args, **provider_kwargs):  # type: ignore[no-untyped-def]
+        captured["args"] = provider_args
+        captured["kwargs"] = provider_kwargs
+        return object()
+
+    monkeypatch.setattr(
+        "corpusdock.cli.VLLMStructuredExtractionProvider", fake_provider
+    )
+
+    provider = _analysis_provider(tmp_path, args)
+
+    assert provider is not None
+    assert __import__("os").environ["HF_HUB_OFFLINE"] == "1"
+    assert __import__("os").environ["TRANSFORMERS_OFFLINE"] == "1"
+    assert captured["kwargs"]["batch_size"] == 16
+    assert captured["kwargs"]["support_unit_processor"] is unit_processor
+
+
 def test_ingest_parser_accepts_multiple_text_sources() -> None:
     args = build_parser().parse_args(["ingest", "one.pdf", "two.epub"])
 
     assert args.path == ["one.pdf", "two.epub"]
     assert not hasattr(args, "ocr")
+
+
+def test_sync_parser_and_analysis_input_option_are_authoritative() -> None:
+    sync = build_parser().parse_args(
+        ["sync", "books", "--sentence-processor", "rule", "--configure-only"]
+    )
+    analyze = build_parser().parse_args(["analyze", "--input", "books"])
+
+    assert sync.input == "books"
+    assert sync.sentence_processor == "rule"
+    assert sync.configure_only is True
+    assert analyze.input == "books"
+
+
+def test_analysis_scans_configured_input_before_loading_the_model(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # type: ignore[no-untyped-def]
+    project = tmp_path / "project"
+    mirror = tmp_path / "input"
+    mirror.mkdir()
+    (mirror / "first.txt").write_text("First local source.\n", encoding="utf-8")
+    assert main(["init", str(project)]) == 0
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "sync",
+                str(mirror),
+                "--project",
+                str(project),
+                "--sentence-processor",
+                "rule",
+                "--configure-only",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    (mirror / "second.txt").write_text("Second local source.\n", encoding="utf-8")
+
+    def assert_synced_then_stop(project_root, args):  # type: ignore[no-untyped-def]
+        assert len(ManifestStore(project_root).load().sources) == 2
+        assert index_status_report(project_root)["status"] == "ready"
+        raise AnalysisModelError("fixture_stop", "Model loading stopped by fixture.")
+
+    monkeypatch.setattr("corpusdock.cli._analysis_provider", assert_synced_then_stop)
+    assert main(["analyze", "--project", str(project), "--json"]) == 1
+    assert "Model loading stopped by fixture" in capsys.readouterr().err
 
 
 def test_removed_ocr_option_is_rejected() -> None:

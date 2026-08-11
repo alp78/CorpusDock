@@ -593,7 +593,14 @@ def _download_file_allowlist(filenames: Sequence[str]) -> tuple[str, ...]:
             "no supported safetensors or PyTorch weight files were advertised"
         )
 
-    metadata_suffixes = (".json", ".model", ".spm", ".txt", ".vocab")
+    metadata_suffixes = (
+        ".json",
+        ".jinja",
+        ".model",
+        ".spm",
+        ".txt",
+        ".vocab",
+    )
     metadata = tuple(
         filename for filename in usable if filename.endswith(metadata_suffixes)
     )

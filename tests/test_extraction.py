@@ -10,6 +10,7 @@ from corpusdock.extraction import (
     MOBI_HUFF_CDIC_COMPRESSION,
     artifact_path_for,
     extract_source,
+    extraction_artifact_is_current,
     extraction_coverage_report,
     write_extraction_artifact,
 )
@@ -227,6 +228,20 @@ def test_pdf_extraction_creates_a_page_level_anchor(tmp_path: Path) -> None:
     assert artifact.anchors[0].locator.extraction_method == "pdf_text_layer"
     assert artifact.metadata["native_text_pages"] == [1]
     assert artifact.schema_version == EXTRACTION_SCHEMA_VERSION
+
+
+def test_extraction_currentness_includes_source_and_parser_provenance(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "corpus"
+    source_path = tmp_path / "notes.txt"
+    source_path.write_text("Reusable local text.\n", encoding="utf-8")
+    _, source = _register(project_root, source_path)
+    payload = extract_source(source, source_path, now=lambda: TIMESTAMP).to_dict()
+
+    assert extraction_artifact_is_current(payload, source)
+    payload["parser"]["version"] = "stale-parser"  # type: ignore[index]
+    assert not extraction_artifact_is_current(payload, source)
 
 
 def test_pdf_missing_text_is_reported_and_never_inferred(tmp_path: Path) -> None:

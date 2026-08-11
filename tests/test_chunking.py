@@ -9,6 +9,7 @@ from corpusdock.chunking import (
     ChunkingError,
     RuleSentenceProcessor,
     chunk_artifact_path_for,
+    chunk_artifact_is_current,
     chunk_coverage_report,
     chunk_extraction_artifact,
     load_chunk_artifact,
@@ -194,3 +195,19 @@ def test_chunk_artifact_write_load_and_coverage(tmp_path: Path) -> None:
     assert loaded["chunks"][0]["text"] == text
     assert report["statuses"]["complete"] == 1
     assert report["chunks"] == 1
+
+    assert chunk_artifact_is_current(
+        loaded,
+        source,
+        sentence_processor_name=artifact.sentence_processor_name,
+        sentence_processor_version=artifact.sentence_processor_version,
+        sentence_model=artifact.sentence_model,
+    )
+    assert not chunk_artifact_is_current(
+        loaded,
+        source,
+        sentence_processor_name=artifact.sentence_processor_name,
+        sentence_processor_version=artifact.sentence_processor_version,
+        sentence_model=artifact.sentence_model,
+        target_characters=999,
+    )
