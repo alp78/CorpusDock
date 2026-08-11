@@ -29,8 +29,8 @@ def test_input_mirror_sync_is_idempotent_and_tracks_add_move_remove(
     second_text = "A paper ledger records each local inspection.\n"
     first = mirror / "first.txt"
     second = mirror / "second.txt"
-    first.write_text(first_text, encoding="utf-8")
-    second.write_text(second_text, encoding="utf-8")
+    first.write_bytes(first_text.encode())
+    second.write_bytes(second_text.encode())
     config = configure_input_mirror(project, mirror, sentence_processor="rule")
 
     initial = synchronize_input_mirror(project, config)
@@ -64,7 +64,7 @@ def test_input_mirror_sync_is_idempotent_and_tracks_add_move_remove(
 
     moved.unlink()
     third_text = "A ceramic guide keeps the assembly square.\n"
-    (mirror / "third.txt").write_text(third_text, encoding="utf-8")
+    (mirror / "third.txt").write_bytes(third_text.encode())
     changed = synchronize_input_mirror(project, config)
 
     assert changed.added_sources == 1
