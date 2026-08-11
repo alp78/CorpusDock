@@ -11,9 +11,11 @@ Suggested local layout:
   extracted/     # Exact parser output and source anchors
   chunks/        # Exact anchor-aware retrieval chunks
   index.sqlite3  # Derived embedded SQLite FTS5 index
+  semantic.sqlite3 # Derived vectors and stable IDs; no excerpts or source paths
+  models/          # Optional local sentence and embedding model cache
 data/
   originals/     # Optional immutable user source files
-  indexes/       # Reserved for future external/vector indexes
+  indexes/       # Optional external derived indexes
 ```
 
 The root `.gitignore` excludes the manifest and all content-bearing paths by default.

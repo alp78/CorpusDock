@@ -55,6 +55,65 @@ from corpusdock.retrieval import (
     build_search_index,
     index_status_report,
 )
+from corpusdock.semantic_index import (
+    PersistentSemanticSearchBackend,
+    SemanticIndexDescriptor,
+    SemanticIndexError,
+    build_semantic_index,
+    read_current_semantic_index_descriptor,
+    semantic_index_status_report,
+)
+
+
+def _add_embedding_options(
+    parser: argparse.ArgumentParser,
+    *,
+    default_model: str | None,
+    include_truncation: bool,
+) -> None:
+    model_help = "Local directory or namespace/model ID " + (
+        f"(default: {default_model})."
+        if default_model is not None
+        else "(default: the model recorded in the semantic index)."
+    )
+    parser.add_argument(
+        "--embedding-model",
+        default=default_model,
+        help=model_help,
+    )
+    parser.add_argument(
+        "--model-revision",
+        help="Optional model commit, tag, or branch; the resolved revision is reported.",
+    )
+    parser.add_argument(
+        "--model-cache",
+        help="Model cache directory (default: the project's ignored model cache).",
+    )
+    parser.add_argument(
+        "--allow-model-download",
+        action="store_true",
+        help="Explicitly permit downloading public model weights; document text is never uploaded.",
+    )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Local inference device understood by the runtime (default: cpu).",
+    )
+    parser.add_argument(
+        "--embedding-batch-size",
+        type=int,
+        default=DEFAULT_EMBEDDING_BATCH_SIZE,
+        help=(
+            "Local embedding batch size from 1 to "
+            f"{MAX_EMBEDDING_BATCH_SIZE} (default: {DEFAULT_EMBEDDING_BATCH_SIZE})."
+        ),
+    )
+    if include_truncation:
+        parser.add_argument(
+            "--truncate-dimension",
+            type=int,
+            help="Optional output dimension for a model trained to support truncation.",
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -143,10 +202,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     index_parser.set_defaults(handler=_build_index)
 
-    search_parser = commands.add_parser(
-        "search", help="Search exact text in the local index."
+    embed_parser = commands.add_parser(
+        "embed",
+        help="Build the persistent local semantic index from exact chunks.",
     )
-    search_parser.add_argument("query", help="Literal words or quoted phrases.")
+    embed_parser.add_argument(
+        "--project",
+        help="Initialized CorpusDock project directory (defaults to the nearest project).",
+    )
+    _add_embedding_options(
+        embed_parser,
+        default_model=DEFAULT_EMBEDDING_MODEL,
+        include_truncation=True,
+    )
+    embed_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit non-content semantic-index metadata as JSON.",
+    )
+    embed_parser.set_defaults(handler=_build_semantic_index)
+
+    search_parser = commands.add_parser(
+        "search", help="Search indexed local document evidence."
+    )
+    search_parser.add_argument("query", help="Search question, phrase, or terms.")
     search_parser.add_argument(
         "--json", action="store_true", help="Emit the evidence contract as JSON."
     )
@@ -165,7 +244,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--match",
         choices=("all", "any", "phrase"),
         default="all",
-        help="Match all terms (default), any term, or the complete phrase.",
+        help="Lexical matching mode; retained as response metadata for semantic search.",
+    )
+    search_parser.add_argument(
+        "--retrieval",
+        choices=("lexical", "semantic"),
+        default="lexical",
+        help="Retrieval path (default: lexical).",
+    )
+    _add_embedding_options(
+        search_parser,
+        default_model=None,
+        include_truncation=False,
     )
     search_parser.set_defaults(handler=_search_sources)
 
@@ -189,45 +279,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="lexical",
         help="Retrieval path to evaluate (default: lexical).",
     )
-    eval_parser.add_argument(
-        "--embedding-model",
-        default=DEFAULT_EMBEDDING_MODEL,
-        help=(
-            "Local directory or namespace/model ID for semantic evaluation "
-            f"(default: {DEFAULT_EMBEDDING_MODEL})."
-        ),
-    )
-    eval_parser.add_argument(
-        "--model-revision",
-        help="Optional model commit, tag, or branch; the resolved revision is reported.",
-    )
-    eval_parser.add_argument(
-        "--model-cache",
-        help="Model cache directory (default: the project's ignored model cache).",
-    )
-    eval_parser.add_argument(
-        "--allow-model-download",
-        action="store_true",
-        help="Explicitly permit downloading public model weights; document text is never uploaded.",
-    )
-    eval_parser.add_argument(
-        "--device",
-        default="cpu",
-        help="Local inference device understood by the runtime (default: cpu).",
-    )
-    eval_parser.add_argument(
-        "--embedding-batch-size",
-        type=int,
-        default=DEFAULT_EMBEDDING_BATCH_SIZE,
-        help=(
-            "Local embedding batch size from 1 to "
-            f"{MAX_EMBEDDING_BATCH_SIZE} (default: {DEFAULT_EMBEDDING_BATCH_SIZE})."
-        ),
-    )
-    eval_parser.add_argument(
-        "--truncate-dimension",
-        type=int,
-        help="Optional output dimension for a model trained to support truncation.",
+    _add_embedding_options(
+        eval_parser,
+        default_model=DEFAULT_EMBEDDING_MODEL,
+        include_truncation=True,
     )
     eval_parser.add_argument(
         "--no-verify",
@@ -308,9 +363,63 @@ def _build_index(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_semantic_index(args: argparse.Namespace) -> int:
+    project_root = _resolve_project_root(args.project)
+    if not SQLiteSearchBackend(project_root).corpus_snapshot().evidence:
+        raise SemanticIndexError(
+            "semantic_corpus_empty",
+            "The exact index has no chunks to embed for semantic retrieval.",
+        )
+    provider = SentenceTransformersEmbeddingProvider(
+        args.embedding_model,
+        revision=args.model_revision,
+        cache_dir=args.model_cache or model_cache_dir_for(project_root),
+        allow_download=args.allow_model_download,
+        device=args.device,
+        batch_size=args.embedding_batch_size,
+        truncate_dimension=args.truncate_dimension,
+        show_progress=not args.json,
+    )
+    descriptor = build_semantic_index(project_root, provider)
+    if args.json:
+        print(
+            json.dumps(
+                descriptor.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+            )
+        )
+        return 0
+
+    embedding = descriptor.embedding
+    print(
+        f"Embedded {descriptor.indexed_chunks} chunks at "
+        f"{descriptor.dimension} dimensions."
+    )
+    print(f"Model: {descriptor.model_id} @ {descriptor.model_revision}")
+    print(
+        f"Build: {descriptor.build['document_embedding_ms']:.3f} ms; "
+        f"{descriptor.build['documents_per_second']:.3f} chunks/second"
+    )
+    print(
+        f"Vectors: {descriptor.vector_size_bytes} bytes; "
+        f"database: {descriptor.index_size_bytes} bytes"
+    )
+    accelerator_memory = embedding["accelerator_peak_memory_allocated_bytes"]
+    if accelerator_memory is not None:
+        print(f"Accelerator peak allocated memory: {accelerator_memory} bytes")
+    print(f"Semantic index: {descriptor.path}")
+    return 0
+
+
 def _search_sources(args: argparse.Namespace) -> int:
     project_root = _resolve_project_root(args.project)
-    response = SQLiteSearchBackend(project_root).search(
+    exact_backend = SQLiteSearchBackend(project_root)
+    if args.retrieval == "semantic":
+        descriptor = read_current_semantic_index_descriptor(project_root)
+        provider = _semantic_query_provider(project_root, descriptor, args)
+        backend = PersistentSemanticSearchBackend(exact_backend, provider)
+    else:
+        backend = exact_backend
+    response = backend.search(
         args.query,
         limit=args.limit,
         source_id=args.source,
@@ -323,7 +432,7 @@ def _search_sources(args: argparse.Namespace) -> int:
         return 0
 
     if not response.results:
-        print("No exact full-text matches.")
+        print("No indexed matches.")
         return 0
     for position, result in enumerate(response.results, start=1):
         print(f"[{position}] {result.citation}")
@@ -342,6 +451,35 @@ def _search_sources(args: argparse.Namespace) -> int:
         print(result.excerpt)
         print()
     return 0
+
+
+def _semantic_query_provider(
+    project_root: Path,
+    descriptor: SemanticIndexDescriptor,
+    args: argparse.Namespace,
+) -> SentenceTransformersEmbeddingProvider:
+    model = args.embedding_model
+    if model is None:
+        if descriptor.model_id.startswith("local:"):
+            raise SemanticIndexError(
+                "semantic_model_path_required",
+                "This semantic index used a local model directory; pass "
+                "--embedding-model with that directory.",
+            )
+        model = descriptor.model_id
+    revision = args.model_revision
+    if revision is None and not descriptor.model_id.startswith("local:"):
+        revision = descriptor.model_revision
+    return SentenceTransformersEmbeddingProvider(
+        model,
+        revision=revision,
+        cache_dir=args.model_cache or model_cache_dir_for(project_root),
+        allow_download=args.allow_model_download,
+        device=args.device,
+        batch_size=args.embedding_batch_size,
+        truncate_dimension=descriptor.dimension,
+        show_progress=False,
+    )
 
 
 def _evaluate_retrieval(args: argparse.Namespace) -> int:
@@ -633,10 +771,12 @@ def _report_coverage(args: argparse.Namespace) -> int:
     extraction_report = extraction_coverage_report(project_root, source_records)
     chunk_report = chunk_coverage_report(project_root, manifest.sources.values())
     search_index_report = index_status_report(project_root)
+    semantic_index_report = semantic_index_status_report(project_root)
     report = {
         "extraction": extraction_report,
         "chunking": chunk_report,
         "index": search_index_report,
+        "semantic_index": semantic_index_report,
     }
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
@@ -674,11 +814,21 @@ def _report_coverage(args: argparse.Namespace) -> int:
             )
         else:
             print(f"Search index: {search_index_report['status']}")
+        if semantic_index_report["status"] == "ready":
+            print(
+                "Semantic index: ready; "
+                f"{semantic_index_report['chunks']} chunks; "
+                f"{semantic_index_report['dimension']} dimensions; "
+                f"{semantic_index_report['model_id']}"
+            )
+        else:
+            print(f"Semantic index: {semantic_index_report['status']}")
     unhealthy = ("failed", "pending", "stale")
     return (
         1
         if (
             search_index_report["status"] != "ready"
+            or semantic_index_report["status"] not in {"missing", "ready"}
             or any(
                 report_part["statuses"][status]
                 for report_part in (extraction_report, chunk_report)
@@ -720,6 +870,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         RetrievalError,
         EvaluationError,
         EmbeddingError,
+        SemanticIndexError,
     ) as error:
         print(f"corpusdock: error: {error}", file=sys.stderr)
         return 1

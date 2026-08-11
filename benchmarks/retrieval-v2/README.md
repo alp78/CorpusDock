@@ -94,6 +94,24 @@ Model registry requests transfer model metadata and weights only. CorpusDock doe
 read the benchmark chunks until the model is present, loads the resolved snapshot
 with `local_files_only=True`, and never uploads source text.
 
+## Run persistent semantic search
+
+After choosing a model, build an atomic project-local vector index and search it with
+the same evidence contract as lexical retrieval:
+
+```bash
+corpusdock embed --project "$benchmark_project" \
+  --allow-model-download --device cpu --json
+corpusdock search "how are cargo records preserved?" \
+  --project "$benchmark_project" --retrieval semantic --device cpu --json
+```
+
+The first command stores vectors and non-content provenance in the ignored
+`.corpusdock/semantic.sqlite3` database. It does not copy excerpts or paths into that
+database. Once the model is cached, omit `--allow-model-download`; semantic queries
+resolve their hits from the exact index so citations and evidence verification remain
+unchanged.
+
 ## CUDA
 
 For a supported NVIDIA GPU, install the PyTorch backend selected for the local driver
@@ -105,6 +123,9 @@ corpusdock eval benchmarks/retrieval-v2/judgments.json \
   --project "$benchmark_project" --limit 3 --retrieval semantic \
   --device cuda --no-verify --json
 ```
+
+Use `corpusdock embed --device cuda` and `corpusdock search --retrieval semantic
+--device cuda` for the persistent workflow.
 
 On an RTX 5080 with CUDA 13.0, the three-run median Qwen query p50 was 29.48 ms versus
 60.10 ms on CPU. The small 15-document build is dominated by CUDA startup, so a

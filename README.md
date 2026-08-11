@@ -14,8 +14,8 @@ returns exact chunk text, stable evidence and chunk IDs, durable source locators
 extraction coverage. PDF ingestion is text-layer only; scanned pages are reported as
 unresolved and are never inferred from images. A versioned evaluator compares exact
 search with provider-neutral, local semantic retrieval while preserving the identical
-evidence and citation contract. Persistent vector indexing and hybrid search are the
-next implementation stage.
+evidence and citation contract. A persistent local vector index now powers semantic
+search; hybrid ranking is the next retrieval stage.
 
 Format extraction does not invoke Calibre, LibreOffice, Pandoc, or another system
 converter. TXT, EPUB, DOCX, and unencrypted MOBI parsing is implemented in the
@@ -71,9 +71,9 @@ produce fabricated evidence or chunks. Use a separately prepared text-accessible
 when scanned-page content is required.
 
 Use `corpusdock source <source-id>` to inspect a registered source as JSON. From a
-subdirectory, `ingest`, `index`, `search`, `eval`, `verify`, `source`, and `doctor`
-discover the nearest initialized project; use `--project /path/to/project` to select
-one explicitly.
+subdirectory, `ingest`, `index`, `embed`, `search`, `eval`, `verify`, `source`, and
+`doctor` discover the nearest initialized project; use `--project /path/to/project`
+to select one explicitly.
 
 The search database lives at `.corpusdock/index.sqlite3` and is ignored by Git. It is
 an atomic, rebuildable SQLite FTS5 index over persisted chunks, not the canonical
@@ -88,6 +88,42 @@ corpusdock verify ev-<sha256> --json
 Search is literal lexical retrieval: `--match all` is the default, with `any` and
 `phrase` alternatives. `verify` revalidates the artifact chain and hashes an available
 original file before returning `source-anchor-confirmed`.
+
+### Persistent local semantic search
+
+Install the optional semantic runtime, build vectors from the exact index, and query
+them locally:
+
+```bash
+uv pip install --torch-backend cpu -e '.[semantic]'
+corpusdock embed --allow-model-download --device cpu
+corpusdock search "how teams preserve operational knowledge" \
+  --retrieval semantic --device cpu --json
+```
+
+`--allow-model-download` is needed only for the explicit first fetch of public model
+files. It never permits uploading document text. The resolved immutable revision is
+recorded in `.corpusdock/semantic.sqlite3`; later `embed` and semantic `search` runs
+are local-only by default and reuse `.corpusdock/models/`. Pass a compatible local
+model directory with `--embedding-model /path/to/model` to avoid a registry fetch
+entirely.
+
+The semantic database contains normalized float32 vectors and stable source, chunk,
+and evidence IDs, but no excerpts or source paths. Results are resolved from the exact
+index and therefore return the same exact excerpts, locators, citations, coverage,
+and evidence IDs as lexical search. Run `corpusdock verify <evidence-id>` for live
+source-byte verification. Re-run `corpusdock embed` after rebuilding an exact index
+whose content changed; semantic search rejects stale or checksum-invalid vectors.
+
+On supported NVIDIA hardware, install the CUDA runtime and use the GPU for both the
+one-time corpus build and query inference:
+
+```bash
+uv pip install --torch-backend auto -e '.[semantic]'
+corpusdock embed --allow-model-download --device cuda
+corpusdock search "how teams preserve operational knowledge" \
+  --retrieval semantic --device cuda
+```
 
 ## Retrieval evaluation
 
@@ -152,8 +188,10 @@ corpusdock eval benchmarks/retrieval-v2/judgments.json \
   --device cuda --no-verify --json
 ```
 
-Semantic evaluation currently builds an ephemeral in-memory matrix; it does not yet
-change `corpusdock search` or persist vectors. See the
+Semantic evaluation deliberately builds an ephemeral in-memory matrix so candidate
+models and dimensions can be compared without replacing the persistent index.
+Production semantic search uses `corpusdock embed` followed by a search with
+`--retrieval semantic`. See the
 [multilingual benchmark and model decision](benchmarks/retrieval-v2/README.md) for
 exact revisions, CPU/RAM/VRAM measurements, CUDA throughput, limitations, and the
 reproducible lexical control.

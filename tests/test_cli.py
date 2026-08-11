@@ -19,6 +19,34 @@ def test_search_parser_accepts_json_output() -> None:
     assert args.json is True
     assert args.limit == 4
     assert args.match == "any"
+    assert args.retrieval == "lexical"
+    assert args.embedding_model is None
+
+
+def test_embed_parser_accepts_cuda_model_options() -> None:
+    args = build_parser().parse_args(
+        [
+            "embed",
+            "--embedding-model",
+            "Qwen/Qwen3-Embedding-0.6B",
+            "--model-revision",
+            "a" * 40,
+            "--device",
+            "cuda",
+            "--embedding-batch-size",
+            "32",
+            "--allow-model-download",
+            "--json",
+        ]
+    )
+
+    assert args.command == "embed"
+    assert args.embedding_model == DEFAULT_EMBEDDING_MODEL
+    assert args.model_revision == "a" * 40
+    assert args.device == "cuda"
+    assert args.embedding_batch_size == 32
+    assert args.allow_model_download is True
+    assert args.json is True
 
 
 def test_eval_parser_accepts_local_baseline_options() -> None:

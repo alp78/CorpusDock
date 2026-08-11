@@ -8,7 +8,7 @@ provider = "local"
 
 [retrieval]
 full_text = true
-# Semantic retrieval is a future local-model phase.
+# Build the opt-in local vector index with `corpusdock embed` before enabling this.
 semantic = false
 max_results = 10
 
