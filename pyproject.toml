@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "corpusdock"
-version = "0.2.0"
+version = "0.3.0"
 description = "Citation-aware local document ingestion and retrieval for AI agents."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,6 +33,41 @@ local-models = [
 
 [project.scripts]
 corpusdock = "corpusdock.cli:main"
+
+[tool.hatch.build]
+exclude = [
+    "/.corpusdock",
+    "/AGENTS.md",
+    "/CLAUDE.md",
+    "/DOCS",
+    "/_scratch",
+    "/data/extracted",
+    "/data/indexes",
+    "/data/originals",
+    "/data/postgres",
+    "/docs",
+    "/models",
+]
+
+[tool.hatch.build.targets.sdist]
+# An explicit release allowlist prevents ignored local notes and corpora from being
+# copied into a source archive when they exist in the working tree.
+only-include = [
+    ".env.example",
+    ".gitattributes",
+    ".github",
+    ".python-version",
+    "README.md",
+    "benchmarks",
+    "data/README.md",
+    "examples",
+    "src",
+    "tests",
+    "uv.lock",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/corpusdock"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

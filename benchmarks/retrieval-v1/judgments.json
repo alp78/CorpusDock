@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "name": "corpusdock-generic-retrieval-v1",
+  "description": "Project-authored generic cases for lexical, phrase, cross-source, paraphrase, and citation-resolution retrieval.",
+  "cases": [
+    {
+      "case_id": "lexical-harbor-retention",
+      "category": "lexical",
+      "query": "cargo inspection records",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-7946d9c519a7ea7080ea458809a41335edd5ede1d7f126c7679b1bc8d6c667e9",
+          "locator": {
+            "locator_type": "text_line",
+            "line_start": 2,
+            "line_end": 2
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "phrase-observatory-wind",
+      "category": "phrase",
+      "query": "sustained winds",
+      "match_mode": "phrase",
+      "relevance": [
+        {
+          "source_id": "src-5db34b6da2cf41bb6412d851d3aaf399453f39a0a02b19bf83e03370ace61a8b",
+          "locator": {
+            "locator_type": "text_line",
+            "line_start": 2,
+            "line_end": 2
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "cross-source-operators",
+      "category": "cross_source",
+      "query": "operators",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-7946d9c519a7ea7080ea458809a41335edd5ede1d7f126c7679b1bc8d6c667e9",
+          "locator": {
+            "locator_type": "text_line",
+            "line_start": 3,
+            "line_end": 3
+          }
+        },
+        {
+          "source_id": "src-5db34b6da2cf41bb6412d851d3aaf399453f39a0a02b19bf83e03370ace61a8b",
+          "locator": {
+            "locator_type": "text_line",
+            "line_start": 3,
+            "line_end": 3
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "citation-garden-mulch",
+      "category": "citation",
+      "query": "leaf mulch",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-cdbd02cce24ed6247881e647828df3e9a769c331cd617326c9de3fc63e16d35a",
+          "locator": {
+            "locator_type": "text_line",
+            "line_start": 2,
+            "line_end": 2
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "paraphrase-harbor-retention",
+      "category": "paraphrase",
+      "query": "keep shipping paperwork for seven years",
+      "match_mode": "all",
+      "relevance": [
+        {
+          "source_id": "src-7946d9c519a7ea7080ea458809a41335edd5ede1d7f126c7679b1bc8d6c667e9",
+          "locator": {
+            "locator_type": "text_line",
+            "line_start": 2,
+            "line_end": 2
+          }
+        }
+      ]
+    }
+  ]
+}

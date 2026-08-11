@@ -12,8 +12,8 @@ CorpusDock registers, extracts, sentence-chunks, and locally indexes `.txt`, `.p
 `.epub`, `.mobi`, and `.docx` files into versioned local artifacts. Every search hit
 returns exact chunk text, stable evidence and chunk IDs, durable source locators, and
 extraction coverage. PDF ingestion is text-layer only; scanned pages are reported as
-unresolved and are never inferred from images. Semantic retrieval is not implemented
-yet.
+unresolved and are never inferred from images. A versioned retrieval evaluator now
+measures the exact-search baseline; semantic retrieval is not implemented yet.
 
 Format extraction does not invoke Calibre, LibreOffice, Pandoc, or another system
 converter. TXT, EPUB, DOCX, and unencrypted MOBI parsing is implemented in the
@@ -30,6 +30,7 @@ corpusdock ingest ./documents
 corpusdock index
 corpusdock doctor
 corpusdock search "citation anchors" --json
+corpusdock eval ./judgments.json --json
 ```
 
 The default quality profile uses the local ONNX `sat-12l-sm` Segment Any Text model.
@@ -68,9 +69,9 @@ produce fabricated evidence or chunks. Use a separately prepared text-accessible
 when scanned-page content is required.
 
 Use `corpusdock source <source-id>` to inspect a registered source as JSON. From a
-subdirectory, `ingest`, `index`, `search`, `verify`, `source`, and `doctor` discover
-the nearest initialized project; use `--project /path/to/project` to select one
-explicitly.
+subdirectory, `ingest`, `index`, `search`, `eval`, `verify`, `source`, and `doctor`
+discover the nearest initialized project; use `--project /path/to/project` to select
+one explicitly.
 
 The search database lives at `.corpusdock/index.sqlite3` and is ignored by Git. It is
 an atomic, rebuildable SQLite FTS5 index over persisted chunks, not the canonical
@@ -85,6 +86,33 @@ corpusdock verify ev-<sha256> --json
 Search is literal lexical retrieval: `--match all` is the default, with `any` and
 `phrase` alternatives. `verify` revalidates the artifact chain and hashes an available
 original file before returning `source-anchor-confirmed`.
+
+## Retrieval evaluation
+
+`corpusdock eval` measures a local index against a versioned JSON relevance dataset.
+It reports micro-averaged source Recall@k, query-averaged MRR@k, locator accuracy,
+live source-verification rate, search-only latency, SQLite index size, and process
+peak RSS where the operating system exposes it. Reports contain queries and stable
+source/evidence IDs, but never retrieved excerpts, citations, or source paths.
+
+The project-authored generic benchmark deliberately includes a paraphrase that exact
+lexical search cannot retrieve. Run the reproducible baseline with:
+
+```bash
+benchmark_project="$(mktemp -d)"
+corpusdock init "$benchmark_project"
+corpusdock ingest benchmarks/retrieval-v1/corpus \
+  --project "$benchmark_project" --sentence-processor rule
+corpusdock index --project "$benchmark_project"
+corpusdock eval benchmarks/retrieval-v1/judgments.json \
+  --project "$benchmark_project" --json
+```
+
+The evaluator rejects datasets whose judged source IDs are absent from the selected
+index. Live evidence verification is enabled by default; `--no-verify` measures only
+retrieval and locator judgments. See the
+[benchmark contract](benchmarks/retrieval-v1/README.md) for the schema and expected
+lexical baseline.
 
 ## Principles
 

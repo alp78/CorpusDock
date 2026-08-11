@@ -20,6 +20,18 @@ def test_search_parser_accepts_json_output() -> None:
     assert args.match == "any"
 
 
+def test_eval_parser_accepts_local_baseline_options() -> None:
+    args = build_parser().parse_args(
+        ["eval", "judgments.json", "--json", "--limit", "5", "--no-verify"]
+    )
+
+    assert args.command == "eval"
+    assert args.dataset == "judgments.json"
+    assert args.json is True
+    assert args.limit == 5
+    assert args.no_verify is True
+
+
 def test_ingest_parser_accepts_multiple_text_sources() -> None:
     args = build_parser().parse_args(["ingest", "one.pdf", "two.epub"])
 

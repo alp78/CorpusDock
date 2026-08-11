@@ -1,0 +1,3 @@
+Observatory Operations Guide
+The telescope dome remains closed whenever sustained winds exceed forty kilometers per hour.
+Operators record humidity before each observing session.

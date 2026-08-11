@@ -1,0 +1,2 @@
+benchmarks/retrieval-v1/corpus/*.txt text eol=lf
+benchmarks/retrieval-v1/judgments.json text eol=lf

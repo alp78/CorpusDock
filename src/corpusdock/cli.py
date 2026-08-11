@@ -26,6 +26,11 @@ from corpusdock.extraction import (
     extraction_coverage_report,
     write_extraction_artifact,
 )
+from corpusdock.evaluation import (
+    EvaluationError,
+    evaluate_retrieval,
+    load_evaluation_dataset,
+)
 from corpusdock.manifest import (
     ManifestError,
     ManifestStore,
@@ -154,6 +159,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search_parser.set_defaults(handler=_search_sources)
 
+    eval_parser = commands.add_parser(
+        "eval", help="Measure local retrieval against relevance judgments."
+    )
+    eval_parser.add_argument("dataset", help="Versioned evaluation dataset JSON file.")
+    eval_parser.add_argument(
+        "--project",
+        help="Initialized CorpusDock project directory (defaults to the nearest project).",
+    )
+    eval_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_SEARCH_LIMIT,
+        help=f"Results per case from 1 to {MAX_SEARCH_LIMIT} (default: {DEFAULT_SEARCH_LIMIT}).",
+    )
+    eval_parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Skip live source-byte verification of returned evidence.",
+    )
+    eval_parser.add_argument(
+        "--json", action="store_true", help="Emit the versioned evaluation report."
+    )
+    eval_parser.set_defaults(handler=_evaluate_retrieval)
+
     source_parser = commands.add_parser("source", help="Inspect a registered source.")
     source_parser.add_argument("source_id", help="Stable CorpusDock source ID.")
     source_parser.add_argument(
@@ -256,6 +285,53 @@ def _search_sources(args: argparse.Namespace) -> int:
         print("Excerpt:")
         print(result.excerpt)
         print()
+    return 0
+
+
+def _evaluate_retrieval(args: argparse.Namespace) -> int:
+    project_root = _resolve_project_root(args.project)
+    dataset = load_evaluation_dataset(args.dataset)
+    backend = SQLiteSearchBackend(project_root)
+    report = evaluate_retrieval(
+        dataset,
+        backend,
+        limit=args.limit,
+        verify=not args.no_verify,
+        index_size_bytes=backend.path.stat().st_size
+        if backend.path.is_file()
+        else None,
+    )
+    if args.json:
+        print(
+            json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+        )
+        return 0
+
+    summary = report.summary
+    print(f"Dataset: {dataset.name} ({summary.cases} cases)")
+    print(
+        f"Retrieval: {report.retrieval_mode} via {report.backend_name}; limit {report.limit}"
+    )
+    print(f"Recall@{report.limit}: {summary.recall_at_k:.3f}")
+    print(f"MRR@{report.limit}: {summary.mean_reciprocal_rank_at_k:.3f}")
+    print(f"Locator accuracy: {_format_optional_rate(summary.locator_accuracy)}")
+    print(f"Source verification: {_format_optional_rate(summary.verification_rate)}")
+    print(
+        "Search latency: "
+        f"p50 {summary.latency_ms.p50:.3f} ms; "
+        f"p95 {summary.latency_ms.p95:.3f} ms"
+    )
+    if report.index_size_bytes is not None:
+        print(f"Index size: {report.index_size_bytes} bytes")
+    if report.process_peak_rss_bytes is not None:
+        print(f"Process peak RSS: {report.process_peak_rss_bytes} bytes")
+    print("Categories:")
+    for category, metrics in report.by_category:
+        print(
+            f"  {category}: {metrics.cases} cases; "
+            f"recall {metrics.recall_at_k:.3f}; "
+            f"MRR {metrics.mean_reciprocal_rank_at_k:.3f}"
+        )
     return 0
 
 
@@ -531,11 +607,21 @@ def _resolve_project_root(project: str | None) -> Path:
     return project_root
 
 
+def _format_optional_rate(value: float | None) -> str:
+    return "not measured" if value is None else f"{value:.3f}"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
-    except (ManifestError, ExtractionError, ChunkingError, RetrievalError) as error:
+    except (
+        ManifestError,
+        ExtractionError,
+        ChunkingError,
+        RetrievalError,
+        EvaluationError,
+    ) as error:
         print(f"corpusdock: error: {error}", file=sys.stderr)
         return 1
