@@ -255,6 +255,9 @@ def test_analysis_scans_configured_input_before_loading_the_model(
     def assert_synced_then_stop(project_root, args):  # type: ignore[no-untyped-def]
         assert len(ManifestStore(project_root).load().sources) == 2
         assert index_status_report(project_root)["status"] == "ready"
+        assert __import__("os").environ["HF_HUB_OFFLINE"] == "1"
+        assert __import__("os").environ["TRANSFORMERS_OFFLINE"] == "1"
+        assert __import__("os").environ["HF_HUB_DISABLE_TELEMETRY"] == "1"
         raise AnalysisModelError("fixture_stop", "Model loading stopped by fixture.")
 
     monkeypatch.setattr("corpusdock.cli._analysis_provider", assert_synced_then_stop)

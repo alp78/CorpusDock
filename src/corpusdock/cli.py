@@ -971,6 +971,12 @@ def _analysis_provider(
 
 def _analyze_sources(args: argparse.Namespace) -> int:
     project_root = _resolve_project_root(args.project)
+    if not args.allow_model_download:
+        # Automatic resume scans can load SaT before the analysis provider is
+        # constructed. Enforce the same cache-only policy for that earlier stage.
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     _synchronize_before_analysis(project_root, args)
     if not SQLiteSearchBackend(project_root).corpus_snapshot().evidence:
         raise AnalysisStoreError(
