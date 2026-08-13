@@ -18,7 +18,9 @@ evidence and citation contract. A persistent local vector index now powers seman
 search, and deterministic reciprocal-rank fusion combines lexical and semantic
 candidates without changing their evidence. An optional local structured-extraction
 stage can derive reviewable concept mentions, claims, stance, and relations from
-those exact evidence chunks. Derived analysis never replaces source evidence.
+those exact evidence chunks. A derived relational concept graph resolves safe
+cross-evidence equivalents and returns exact citation-ready support for queried
+concepts. Derived analysis and graph projections never replace source evidence.
 
 Format extraction does not invoke Calibre, LibreOffice, Pandoc, or another system
 converter. TXT, EPUB, DOCX, and unencrypted MOBI parsing is implemented in the
@@ -104,8 +106,8 @@ produce fabricated evidence or chunks. Use a separately prepared text-accessible
 when scanned-page content is required.
 
 Use `corpusdock source <source-id>` to inspect a registered source as JSON. From a
-subdirectory, `ingest`, `sync`, `index`, `embed`, `analyze`, `search`, `eval`, `verify`,
-`source`, and `doctor` discover the nearest initialized project; use
+subdirectory, `ingest`, `sync`, `index`, `embed`, `analyze`, `graph`, `search`, `eval`,
+`verify`, `source`, and `doctor` discover the nearest initialized project; use
 `--project /path/to/project` to select one explicitly.
 
 The search database lives at `.corpusdock/index.sqlite3` and is ignored by Git. It is
@@ -224,9 +226,8 @@ support offsets, and support hashes. The model cites local SaT evidence-unit IDs
 deterministic code converts them to continuous exact spans. The database intentionally
 stores no source paths, excerpts, raw model output, or prompts. Claims preserve
 polarity, certainty, conditionality, attribution, and normative force so disagreement
-is retained rather than silently reconciled. Candidate IDs and anchors prepare the
-next phase—cross-evidence concept resolution and graph querying—but candidates are
-not accepted facts until reviewed.
+is retained rather than silently reconciled. Candidates are not accepted facts until
+reviewed.
 
 For the portable fallback, install `.[analysis]` and omit
 `--analysis-runtime vllm`. Transformers also supports the optional
@@ -235,6 +236,41 @@ larger 9B NF4 model beat the selected BF16 profile on the versioned quality gate
 faster or larger configurations are not selected at the expense of fidelity. See the
 [analysis benchmark and model decision](benchmarks/analysis-v1/README.md) for exact
 revisions, gates, measurements, limitations, and reproduction commands.
+
+### Evidence-linked concept graph
+
+Build the local graph after a completed analysis run, then search resolved concepts:
+
+```bash
+corpusdock graph build --json
+corpusdock graph status
+corpusdock graph query "failure prevention" --limit 5 --json
+```
+
+By default, `graph build` selects the completed run with the widest evidence coverage,
+then the newest completion time. Use `--run run-<sha256>` to project a specific
+completed run. The build is deterministic, checksummed, fully validated in a temporary
+SQLite database, and atomically replaces the previous graph only after both the exact
+index and selected analysis projection are confirmed unchanged.
+
+The first resolution policy is deliberately conservative. It groups concept mentions
+only when both their labels and model-assigned types match after Unicode, case,
+whitespace, dash, quote, and edge-punctuation normalization. Thus capitalization
+variants can share a stable `gcon-...` node, while homonyms and incompatible types stay
+separate. Broader semantic synonyms are not silently merged; they require a later
+scored alias proposal and review step. Rejected candidates are excluded, while
+unreviewed, accepted, and needs-review candidates retain their state.
+
+Graph queries search canonical labels and observed surface forms. Each result reports
+source and mention counts, linked claims, stance-preserving relation neighbors, and
+source-diverse support spans resolved at query time through the authoritative exact
+index. The JSON response includes the original citation locator and exact supporting
+text, so an agent can verify the evidence instead of treating a graph edge as fact.
+
+The projection lives in ignored `.corpusdock/graph.sqlite3`. It does not copy original
+source paths or the exact index's excerpt records; those are resolved from the current
+exact index only when queried. A corpus change, selected-run change, candidate review,
+or checksum mismatch makes the graph stale or invalid and requires a rebuild.
 
 ## Retrieval evaluation
 

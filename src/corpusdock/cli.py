@@ -45,6 +45,16 @@ from corpusdock.chunking import (
     sentence_processor_from,
     write_chunk_artifact,
 )
+from corpusdock.concept_graph import (
+    DEFAULT_GRAPH_EVIDENCE_LIMIT,
+    DEFAULT_GRAPH_QUERY_LIMIT,
+    MAX_GRAPH_EVIDENCE_LIMIT,
+    MAX_GRAPH_QUERY_LIMIT,
+    ConceptGraphError,
+    build_concept_graph,
+    concept_graph_status_report,
+    query_concept_graph,
+)
 from corpusdock.extraction import (
     ExtractionError,
     extract_source,
@@ -562,6 +572,80 @@ def build_parser() -> argparse.ArgumentParser:
     )
     analysis_eval_parser.set_defaults(handler=_evaluate_analysis)
 
+    graph_parser = commands.add_parser(
+        "graph",
+        help="Build or query the evidence-linked corpus concept graph.",
+    )
+    graph_commands = graph_parser.add_subparsers(dest="graph_command", required=True)
+    graph_build_parser = graph_commands.add_parser(
+        "build",
+        help="Resolve one completed analysis run into an atomic local graph.",
+    )
+    graph_build_parser.add_argument(
+        "--project",
+        help="Initialized CorpusDock project directory (defaults to the nearest project).",
+    )
+    graph_build_parser.add_argument(
+        "--run",
+        help=(
+            "Completed analysis run ID. By default, select the run with the widest "
+            "evidence coverage, then the newest completion time."
+        ),
+    )
+    graph_build_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit non-content graph provenance and counts as JSON.",
+    )
+    graph_build_parser.set_defaults(handler=_build_concept_graph)
+
+    graph_query_parser = graph_commands.add_parser(
+        "query",
+        help="Search resolved concepts and return exact citation-ready support.",
+    )
+    graph_query_parser.add_argument("query", help="Concept terms to find.")
+    graph_query_parser.add_argument(
+        "--project",
+        help="Initialized CorpusDock project directory (defaults to the nearest project).",
+    )
+    graph_query_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_GRAPH_QUERY_LIMIT,
+        help=(
+            f"Maximum concepts from 1 to {MAX_GRAPH_QUERY_LIMIT} "
+            f"(default: {DEFAULT_GRAPH_QUERY_LIMIT})."
+        ),
+    )
+    graph_query_parser.add_argument(
+        "--evidence-limit",
+        type=int,
+        default=DEFAULT_GRAPH_EVIDENCE_LIMIT,
+        help=(
+            f"Maximum source-diverse support records per concept from 1 to "
+            f"{MAX_GRAPH_EVIDENCE_LIMIT} "
+            f"(default: {DEFAULT_GRAPH_EVIDENCE_LIMIT})."
+        ),
+    )
+    graph_query_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit resolved concepts and exact evidence as JSON.",
+    )
+    graph_query_parser.set_defaults(handler=_query_concept_graph)
+
+    graph_status_parser = graph_commands.add_parser(
+        "status", help="Report non-content concept graph health and coverage."
+    )
+    graph_status_parser.add_argument(
+        "--project",
+        help="Initialized CorpusDock project directory (defaults to the nearest project).",
+    )
+    graph_status_parser.add_argument(
+        "--json", action="store_true", help="Emit graph health as JSON."
+    )
+    graph_status_parser.set_defaults(handler=_report_concept_graph)
+
     source_parser = commands.add_parser("source", help="Inspect a registered source.")
     source_parser.add_argument("source_id", help="Stable CorpusDock source ID.")
     source_parser.add_argument(
@@ -607,6 +691,84 @@ def _not_implemented(args: argparse.Namespace) -> int:
         "implemented yet."
     )
     return 2
+
+
+def _build_concept_graph(args: argparse.Namespace) -> int:
+    project_root = _resolve_project_root(args.project)
+    descriptor = build_concept_graph(project_root, run_id=args.run)
+    if args.json:
+        print(
+            json.dumps(
+                descriptor.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+            )
+        )
+        return 0
+    print(
+        f"Concept graph: {descriptor.concepts} resolved concepts from "
+        f"{descriptor.concept_mentions} mentions"
+    )
+    print(
+        f"Grounded candidates: {descriptor.claims} claims; "
+        f"{descriptor.relations} relations; "
+        f"{descriptor.represented_sources}/{descriptor.indexed_sources} sources represented"
+    )
+    print(
+        f"Analysis run: {descriptor.analysis_run_id} "
+        f"({descriptor.analysis_run_selection})"
+    )
+    print(f"Resolution policy: {descriptor.resolution_policy}")
+    print(f"Concept graph: {descriptor.path}")
+    return 0
+
+
+def _query_concept_graph(args: argparse.Namespace) -> int:
+    project_root = _resolve_project_root(args.project)
+    response = query_concept_graph(
+        project_root,
+        args.query,
+        limit=args.limit,
+        evidence_limit=args.evidence_limit,
+    )
+    if args.json:
+        print(
+            json.dumps(response.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+        )
+        return 0
+    if not response.results:
+        print("No resolved concepts matched.")
+        return 0
+    for result in response.results:
+        print(
+            f"{result.rank}. {result.canonical_label} [{result.canonical_type}] — "
+            f"{result.mentions} mentions, {result.sources} sources, "
+            f"{result.claims} claims, {result.relations} relations"
+        )
+        for support in result.support:
+            print(f"   {support.evidence.citation}")
+            print(f"   {support.text}")
+    return 0
+
+
+def _report_concept_graph(args: argparse.Namespace) -> int:
+    project_root = _resolve_project_root(args.project)
+    report = concept_graph_status_report(project_root)
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    elif report["status"] == "ready":
+        counts = report["counts"]
+        analysis = report["analysis"]
+        print(
+            "Concept graph: ready; "
+            f"{counts['concepts']} concepts from "
+            f"{counts['concept_mentions']} mentions; "
+            f"{counts['claims']} claims; {counts['relations']} relations"
+        )
+        print(f"Analysis run: {analysis['run_id']}")
+    else:
+        print(f"Concept graph: {report['status']}")
+        if "error" in report:
+            print(str(report["error"]))
+    return 0 if report["status"] == "ready" else 1
 
 
 def _build_index(args: argparse.Namespace) -> int:
@@ -1281,12 +1443,14 @@ def _report_coverage(args: argparse.Namespace) -> int:
     search_index_report = index_status_report(project_root)
     semantic_index_report = semantic_index_status_report(project_root)
     derived_analysis_report = analysis_status_report(project_root)
+    concept_graph_report = concept_graph_status_report(project_root)
     report = {
         "extraction": extraction_report,
         "chunking": chunk_report,
         "index": search_index_report,
         "semantic_index": semantic_index_report,
         "analysis": derived_analysis_report,
+        "concept_graph": concept_graph_report,
     }
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
@@ -1354,6 +1518,15 @@ def _report_coverage(args: argparse.Namespace) -> int:
                     )
         else:
             print(f"Derived analysis: {derived_analysis_report['status']}")
+        if concept_graph_report["status"] == "ready":
+            counts = concept_graph_report["counts"]
+            print(
+                "Concept graph: ready; "
+                f"{counts['concepts']} resolved concepts; "
+                f"{counts['claims']} claims; {counts['relations']} relations"
+            )
+        else:
+            print(f"Concept graph: {concept_graph_report['status']}")
     unhealthy = ("failed", "pending", "stale")
     return (
         1
@@ -1361,6 +1534,7 @@ def _report_coverage(args: argparse.Namespace) -> int:
             search_index_report["status"] != "ready"
             or semantic_index_report["status"] not in {"missing", "ready"}
             or derived_analysis_report["status"] not in {"missing", "ready"}
+            or concept_graph_report["status"] not in {"missing", "ready"}
             or any(
                 report_part["statuses"][status]
                 for report_part in (extraction_report, chunk_report)
@@ -1471,6 +1645,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         AnalysisModelError,
         AnalysisStoreError,
         AnalysisEvaluationError,
+        ConceptGraphError,
     ) as error:
         print(f"corpusdock: error: {error}", file=sys.stderr)
         return 1
