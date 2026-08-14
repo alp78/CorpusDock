@@ -33,6 +33,14 @@ from corpusdock.mobi_huffcdic import HuffCdicDecoder, HuffCdicError
 
 
 EXTRACTION_SCHEMA_VERSION = 2
+PARSER_ALGORITHM_VERSIONS = {
+    "docx": 1,
+    "epub": 1,
+    "mobi": 1,
+    "pdf": 1,
+    "txt": 1,
+}
+LEGACY_PARSER_ALGORITHM_VERSION = 1
 EXTRACTED_DIRECTORY_NAME = "extracted"
 TEXT_OFFSET_UNIT = "unicode_codepoint"
 MAX_ARCHIVE_MEMBERS = 10_000
@@ -97,6 +105,7 @@ class ExtractionArtifact:
             "extracted_at": self.extracted_at,
             "parser": {
                 "name": self.parser_name,
+                "algorithm_version": PARSER_ALGORITHM_VERSIONS[self.source_format],
                 "version": self.parser_version,
             },
             "status": self.status,
@@ -359,13 +368,19 @@ def extraction_artifact_is_current(artifact: object, source: SourceRecord) -> bo
     if not isinstance(parser, dict):
         return False
     parser_name, parser_version = _parser_identity(source.source_format)
+    algorithm_version = parser.get("algorithm_version", LEGACY_PARSER_ALGORITHM_VERSION)
+    parser_version_matches = (
+        source.source_format != "pdf" or parser.get("version") == parser_version
+    )
     return (
         artifact.get("schema_version") == EXTRACTION_SCHEMA_VERSION
         and artifact.get("source_id") == source.source_id
         and artifact.get("source_sha256") == source.sha256
         and artifact.get("source_format") == source.source_format
         and parser.get("name") == parser_name
-        and parser.get("version") == parser_version
+        and type(algorithm_version) is int
+        and algorithm_version == PARSER_ALGORITHM_VERSIONS[source.source_format]
+        and parser_version_matches
         and artifact.get("status") in {"complete", "partial", "failed"}
     )
 

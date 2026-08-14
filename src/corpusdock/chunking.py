@@ -19,6 +19,8 @@ from corpusdock.manifest import STATE_DIRECTORY_NAME, SourceRecord, utc_now
 
 
 CHUNK_SCHEMA_VERSION = 2
+CHUNK_ALGORITHM_VERSION = 1
+LEGACY_CHUNK_ALGORITHM_VERSION = 1
 CHUNK_DIRECTORY_NAME = "chunks"
 DEFAULT_SENTENCE_MODEL = "sat-12l-sm"
 DEFAULT_TARGET_CHARACTERS = 1_200
@@ -207,6 +209,7 @@ class ChunkArtifact:
             "status": self.status,
             "chunker": {
                 "name": "corpusdock.anchor_sentence",
+                "algorithm_version": CHUNK_ALGORITHM_VERSION,
                 "version": __version__,
                 "sentence_processor": self.sentence_processor_name,
                 "sentence_processor_version": self.sentence_processor_version,
@@ -500,15 +503,21 @@ def chunk_artifact_is_current(
     chunker = artifact.get("chunker")
     if not isinstance(chunker, dict):
         return False
+    algorithm_version = chunker.get("algorithm_version", LEGACY_CHUNK_ALGORITHM_VERSION)
+    processor_version_matches = (
+        chunker.get("sentence_processor") == RuleSentenceProcessor.name
+        or chunker.get("sentence_processor_version") == sentence_processor_version
+    )
     return (
         artifact.get("schema_version") == CHUNK_SCHEMA_VERSION
         and artifact.get("source_id") == source.source_id
         and artifact.get("source_sha256") == source.sha256
         and artifact.get("status") in {"complete", "partial", "failed"}
         and chunker.get("name") == "corpusdock.anchor_sentence"
-        and chunker.get("version") == __version__
+        and type(algorithm_version) is int
+        and algorithm_version == CHUNK_ALGORITHM_VERSION
         and chunker.get("sentence_processor") == sentence_processor_name
-        and chunker.get("sentence_processor_version") == sentence_processor_version
+        and processor_version_matches
         and chunker.get("sentence_model") == sentence_model
         and chunker.get("target_characters") == target_characters
         and chunker.get("max_characters") == max_characters

@@ -75,6 +75,9 @@ rename updates path provenance without extracting or chunking the book again. Ne
 changed bytes enter the queue; removing the last copy of a source from the directory
 prunes its extraction, chunks, semantic vector cache, and derived analysis records.
 An empty configured directory intentionally produces an empty corpus.
+Application upgrades alone do not invalidate extraction or chunks: rebuilds are tied
+to their schema and algorithm revisions, source bytes, parser or sentence-processor
+dependencies, sentence model, and chunking settings.
 
 The configuration is stored in ignored `.corpusdock/pipeline.json`. After either
 `sync` form configures an input, every `corpusdock analyze` resume scans that input

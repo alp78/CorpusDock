@@ -7,6 +7,7 @@ import zipfile
 
 from corpusdock.extraction import (
     EXTRACTION_SCHEMA_VERSION,
+    PARSER_ALGORITHM_VERSIONS,
     MOBI_HUFF_CDIC_COMPRESSION,
     artifact_path_for,
     extract_source,
@@ -230,12 +231,31 @@ def test_pdf_extraction_creates_a_page_level_anchor(tmp_path: Path) -> None:
     assert artifact.schema_version == EXTRACTION_SCHEMA_VERSION
 
 
-def test_extraction_currentness_includes_source_and_parser_provenance(
+def test_builtin_extraction_currentness_uses_stable_algorithm_version(
     tmp_path: Path,
 ) -> None:
     project_root = tmp_path / "corpus"
     source_path = tmp_path / "notes.txt"
     source_path.write_text("Reusable local text.\n", encoding="utf-8")
+    _, source = _register(project_root, source_path)
+    payload = extract_source(source, source_path, now=lambda: TIMESTAMP).to_dict()
+
+    assert extraction_artifact_is_current(payload, source)
+    assert payload["parser"]["algorithm_version"] == PARSER_ALGORITHM_VERSIONS["txt"]
+    payload["parser"]["version"] = "stale-parser"  # type: ignore[index]
+    assert extraction_artifact_is_current(payload, source)
+    del payload["parser"]["algorithm_version"]  # type: ignore[index]
+    assert extraction_artifact_is_current(payload, source)
+    payload["parser"]["algorithm_version"] = (  # type: ignore[index]
+        PARSER_ALGORITHM_VERSIONS["txt"] + 1
+    )
+    assert not extraction_artifact_is_current(payload, source)
+
+
+def test_pdf_extraction_currentness_tracks_dependency_version(tmp_path: Path) -> None:
+    project_root = tmp_path / "corpus"
+    source_path = tmp_path / "fixture.pdf"
+    _write_minimal_pdf(source_path, "Versioned PDF parser.")
     _, source = _register(project_root, source_path)
     payload = extract_source(source, source_path, now=lambda: TIMESTAMP).to_dict()
 

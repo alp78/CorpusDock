@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from corpusdock.chunking import (
+    CHUNK_ALGORITHM_VERSION,
     CHUNK_SCHEMA_VERSION,
     ChunkingError,
     RuleSentenceProcessor,
@@ -192,6 +194,7 @@ def test_chunk_artifact_write_load_and_coverage(tmp_path: Path) -> None:
     assert written == chunk_artifact_path_for(tmp_path, SOURCE_ID)
     assert loaded is not None
     assert loaded["schema_version"] == CHUNK_SCHEMA_VERSION
+    assert loaded["chunker"]["algorithm_version"] == CHUNK_ALGORITHM_VERSION
     assert loaded["chunks"][0]["text"] == text
     assert report["statuses"]["complete"] == 1
     assert report["chunks"] == 1
@@ -211,3 +214,37 @@ def test_chunk_artifact_write_load_and_coverage(tmp_path: Path) -> None:
         sentence_model=artifact.sentence_model,
         target_characters=999,
     )
+
+
+def test_chunk_freshness_survives_unrelated_application_version_changes() -> None:
+    text = "Stable chunk."
+    artifact = chunk_extraction_artifact(
+        _extraction(text, [_anchor("line-1", 0, len(text))]),
+        RuleSentenceProcessor(),
+        now=lambda: TIMESTAMP,
+    )
+    source = SourceRecord(
+        source_id=SOURCE_ID,
+        sha256=SOURCE_SHA256,
+        source_format="txt",
+        size_bytes=len(text),
+        original_paths=("/local/source.txt",),
+        registered_at=TIMESTAMP,
+        registration_tool_version="0.1.0",
+    )
+    payload = artifact.to_dict()
+    payload["chunker"]["version"] = "0.7.0"
+    payload["chunker"]["sentence_processor_version"] = "0.7.0"
+    legacy_payload = deepcopy(payload)
+    del legacy_payload["chunker"]["algorithm_version"]
+
+    settings = {
+        "sentence_processor_name": artifact.sentence_processor_name,
+        "sentence_processor_version": artifact.sentence_processor_version,
+        "sentence_model": artifact.sentence_model,
+    }
+    assert chunk_artifact_is_current(payload, source, **settings)
+    assert chunk_artifact_is_current(legacy_payload, source, **settings)
+
+    payload["chunker"]["algorithm_version"] = CHUNK_ALGORITHM_VERSION + 1
+    assert not chunk_artifact_is_current(payload, source, **settings)
