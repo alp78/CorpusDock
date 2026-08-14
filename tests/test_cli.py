@@ -211,17 +211,27 @@ def test_ingest_parser_accepts_multiple_text_sources() -> None:
     args = build_parser().parse_args(["ingest", "one.pdf", "two.epub"])
 
     assert args.path == ["one.pdf", "two.epub"]
+    assert args.sentence_device == "cpu"
     assert not hasattr(args, "ocr")
 
 
 def test_sync_parser_and_analysis_input_option_are_authoritative() -> None:
     sync = build_parser().parse_args(
-        ["sync", "books", "--sentence-processor", "rule", "--configure-only"]
+        [
+            "sync",
+            "books",
+            "--sentence-processor",
+            "sat",
+            "--sentence-device",
+            "cuda",
+            "--configure-only",
+        ]
     )
     analyze = build_parser().parse_args(["analyze", "--input", "books"])
 
     assert sync.input == "books"
-    assert sync.sentence_processor == "rule"
+    assert sync.sentence_processor == "sat"
+    assert sync.sentence_device == "cuda"
     assert sync.configure_only is True
     assert analyze.input == "books"
 

@@ -30,6 +30,9 @@ dev = ["pytest>=8.0"]
 local-models = [
     "wtpsplit-lite>=0.2,<1",
 ]
+local-models-cuda = [
+    "wtpsplit[onnx-gpu]>=2.2,<3",
+]
 semantic = [
     "sentence-transformers>=5.4,<6",
 ]
@@ -45,7 +48,19 @@ analysis-cuda = [
 ]
 analysis-vllm = [
     "vllm>=0.27,<0.28",
-    "wtpsplit-lite>=0.2,<1",
+    "wtpsplit[onnx-gpu]>=2.2,<3",
+]
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "local-models" },
+        { extra = "local-models-cuda" },
+    ],
+    [
+        { extra = "local-models" },
+        { extra = "analysis-vllm" },
+    ],
 ]
 
 [project.scripts]

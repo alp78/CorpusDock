@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import os
@@ -12,6 +13,7 @@ from pathlib import Path
 import re
 from typing import Any, Literal, Protocol
 from uuid import uuid4
+import warnings
 
 from corpusdock import __version__
 from corpusdock.extraction import EXTRACTION_SCHEMA_VERSION
@@ -23,11 +25,16 @@ CHUNK_ALGORITHM_VERSION = 1
 LEGACY_CHUNK_ALGORITHM_VERSION = 1
 CHUNK_DIRECTORY_NAME = "chunks"
 DEFAULT_SENTENCE_MODEL = "sat-12l-sm"
+DEFAULT_SENTENCE_DEVICE = "cpu"
+SAT_PROCESSOR_NAME = "segment-any-text.SaT"
+SAT_PROCESSOR_VERSION = "1"
+LEGACY_SAT_PROCESSOR_IDENTITIES = frozenset({("wtpsplit-lite.SaT", "0.2.0")})
 DEFAULT_TARGET_CHARACTERS = 1_200
 DEFAULT_MAX_CHARACTERS = 1_800
 DEFAULT_OVERLAP_SENTENCES = 1
 
 ChunkingStatus = Literal["complete", "partial", "failed"]
+SentenceDevice = Literal["cpu", "cuda"]
 
 
 class ChunkingError(Exception):
@@ -44,6 +51,9 @@ class SentenceProcessor(Protocol):
     name: str
     version: str
     model_name: str
+    device: str
+    backend_name: str
+    backend_version: str
 
     def split_many(self, texts: Sequence[str]) -> tuple[tuple[str, ...], ...]: ...
 
@@ -54,6 +64,9 @@ class RuleSentenceProcessor:
     name = "corpusdock.rule_sentence"
     version = __version__
     model_name = "none"
+    device = "cpu"
+    backend_name = "corpusdock"
+    backend_version = __version__
     _ABBREVIATIONS = {
         "dr.",
         "mr.",
@@ -99,43 +112,74 @@ class RuleSentenceProcessor:
 class SaTSentenceProcessor:
     """State-of-the-art SaT segmentation using a local ONNX model."""
 
-    name = "wtpsplit-lite.SaT"
-
-    def __init__(self, model_name: str = DEFAULT_SENTENCE_MODEL) -> None:
+    def __init__(
+        self,
+        model_name: str = DEFAULT_SENTENCE_MODEL,
+        *,
+        device: SentenceDevice = DEFAULT_SENTENCE_DEVICE,
+    ) -> None:
+        _distribution, module_name, backend_name, backend_version = (
+            _sat_backend_identity(device)
+        )
         try:
-            from wtpsplit_lite import SaT
+            sat_type = getattr(import_module(module_name), "SaT")
         except ImportError as error:
+            extra = "local-models-cuda" if device == "cuda" else "local-models"
             raise ChunkingError(
                 "sentence_model_unavailable",
-                "SaT requires the local-models extra: run 'uv sync --extra local-models'.",
+                f"SaT on {device} requires the {extra} extra: "
+                f"run 'uv sync --extra {extra}'.",
             ) from error
+        providers = _onnx_providers_for(device)
+        self.name = SAT_PROCESSOR_NAME
+        self.version = SAT_PROCESSOR_VERSION
         self.model_name = model_name
+        self.device = device
+        self.backend_name = backend_name
+        self.backend_version = backend_version
         try:
-            self.version = package_version("wtpsplit-lite")
-        except PackageNotFoundError:
-            self.version = "unknown"
-        try:
-            self._model = SaT(model_name, ort_providers=["CPUExecutionProvider"])
+            self._model = sat_type(model_name, ort_providers=providers)
+            if device == "cuda":
+                active_providers = _active_onnx_providers(self._model)
+                if "CUDAExecutionProvider" not in active_providers:
+                    raise ChunkingError(
+                        "sentence_cuda_inactive",
+                        "SaT requested CUDA, but its ONNX session did not activate "
+                        "CUDAExecutionProvider.",
+                    )
+        except ChunkingError:
+            raise
         except Exception as error:
             raise ChunkingError(
                 "sentence_model_load_failed",
-                f"Could not load local SaT model '{model_name}': {error}",
+                f"Could not load local SaT model '{model_name}' on {device}: {error}",
             ) from error
 
     def split_many(self, texts: Sequence[str]) -> tuple[tuple[str, ...], ...]:
         if not texts:
             return ()
         try:
-            raw_results = self._model.split(
-                list(texts),
-                strip_whitespace=False,
-                treat_newline_as_space=True,
-                weighting="hat",
-                stride=128,
-                block_size=512,
-                batch_size=32,
-            )
-            results = tuple(tuple(segments) for segments in raw_results)
+            split_kwargs: dict[str, Any] = {
+                "strip_whitespace": False,
+                "weighting": "hat",
+                "stride": 128,
+                "block_size": 512,
+                "batch_size": 32,
+            }
+            if self.backend_name == "wtpsplit.SaT":
+                split_kwargs["split_on_input_newlines"] = False
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message="split_on_input_newlines=False will lead to newlines.*",
+                        category=UserWarning,
+                    )
+                    raw_results = self._model.split(list(texts), **split_kwargs)
+                    results = tuple(tuple(segments) for segments in raw_results)
+            else:
+                split_kwargs["treat_newline_as_space"] = True
+                raw_results = self._model.split(list(texts), **split_kwargs)
+                results = tuple(tuple(segments) for segments in raw_results)
         except Exception as error:
             raise ChunkingError(
                 "sentence_processing_failed", f"Local SaT inference failed: {error}"
@@ -152,6 +196,68 @@ class SaTSentenceProcessor:
                     "Sentence processor did not preserve the exact input text and offsets.",
                 )
         return results
+
+
+def _sat_backend_identity(device: str) -> tuple[str, str, str, str]:
+    if not isinstance(device, str) or device not in {"cpu", "cuda"}:
+        raise ChunkingError(
+            "sentence_device_invalid",
+            "Sentence device must be 'cpu' or 'cuda'.",
+        )
+    candidates = (
+        (("wtpsplit", "wtpsplit", "wtpsplit.SaT"),)
+        if device == "cuda"
+        else (
+            ("wtpsplit-lite", "wtpsplit_lite", "wtpsplit-lite.SaT"),
+            ("wtpsplit", "wtpsplit", "wtpsplit.SaT"),
+        )
+    )
+    for distribution, module_name, processor_name in candidates:
+        try:
+            return (
+                distribution,
+                module_name,
+                processor_name,
+                package_version(distribution),
+            )
+        except PackageNotFoundError:
+            continue
+    distribution, module_name, processor_name = candidates[0]
+    return distribution, module_name, processor_name, "unknown"
+
+
+def _onnx_providers_for(device: str) -> list[str]:
+    try:
+        ort = import_module("onnxruntime")
+        available = tuple(ort.get_available_providers())
+    except (ImportError, AttributeError) as error:
+        raise ChunkingError(
+            "sentence_runtime_unavailable",
+            "SaT requires a compatible local ONNX Runtime installation.",
+        ) from error
+    if device == "cuda":
+        if "CUDAExecutionProvider" not in available:
+            raise ChunkingError(
+                "sentence_cuda_unavailable",
+                "CUDA sentence processing requires ONNX Runtime GPU with "
+                "CUDAExecutionProvider; run 'uv sync --extra local-models-cuda'.",
+            )
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
+
+
+def _active_onnx_providers(model: object) -> tuple[str, ...]:
+    wrapper = getattr(model, "model", None)
+    session = getattr(wrapper, "ort_session", None)
+    get_providers = getattr(session, "get_providers", None)
+    if not callable(get_providers):
+        return ()
+    providers = get_providers()
+    if not isinstance(providers, list) or any(
+        not isinstance(provider, str) for provider in providers
+    ):
+        return ()
+    return tuple(providers)
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +299,9 @@ class ChunkArtifact:
     sentence_processor_name: str
     sentence_processor_version: str
     sentence_model: str
+    sentence_device: str
+    sentence_backend_name: str
+    sentence_backend_version: str
     target_characters: int
     max_characters: int
     overlap_sentences: int
@@ -214,6 +323,9 @@ class ChunkArtifact:
                 "sentence_processor": self.sentence_processor_name,
                 "sentence_processor_version": self.sentence_processor_version,
                 "sentence_model": self.sentence_model,
+                "sentence_device": self.sentence_device,
+                "sentence_backend": self.sentence_backend_name,
+                "sentence_backend_version": self.sentence_backend_version,
                 "target_characters": self.target_characters,
                 "max_characters": self.max_characters,
                 "overlap_sentences": self.overlap_sentences,
@@ -230,6 +342,9 @@ class ChunkArtifact:
             "warning_count": len(self.warnings),
             "sentence_processor": self.sentence_processor_name,
             "sentence_model": self.sentence_model,
+            "sentence_device": self.sentence_device,
+            "sentence_backend": self.sentence_backend_name,
+            "sentence_backend_version": self.sentence_backend_version,
         }
 
 
@@ -255,12 +370,20 @@ class _SentenceSpan:
 
 
 def sentence_processor_from(
-    name: str, *, model_name: str = DEFAULT_SENTENCE_MODEL
+    name: str,
+    *,
+    model_name: str = DEFAULT_SENTENCE_MODEL,
+    device: SentenceDevice = DEFAULT_SENTENCE_DEVICE,
 ) -> SentenceProcessor:
     if name == "rule":
+        if device != "cpu":
+            raise ChunkingError(
+                "sentence_device_invalid",
+                "The rule sentence processor runs on CPU; use --sentence-device cpu.",
+            )
         return RuleSentenceProcessor()
     if name == "sat":
-        return SaTSentenceProcessor(model_name)
+        return SaTSentenceProcessor(model_name, device=device)
     raise ChunkingError(
         "sentence_processor_unknown", f"Unknown sentence processor '{name}'."
     )
@@ -423,6 +546,9 @@ def chunk_extraction_artifact(
         sentence_processor_name=sentence_processor.name,
         sentence_processor_version=sentence_processor.version,
         sentence_model=sentence_processor.model_name,
+        sentence_device=sentence_processor.device,
+        sentence_backend_name=sentence_processor.backend_name,
+        sentence_backend_version=sentence_processor.backend_version,
         target_characters=target_characters,
         max_characters=max_characters,
         overlap_sentences=overlap_sentences,
@@ -504,9 +630,24 @@ def chunk_artifact_is_current(
     if not isinstance(chunker, dict):
         return False
     algorithm_version = chunker.get("algorithm_version", LEGACY_CHUNK_ALGORITHM_VERSION)
-    processor_version_matches = (
-        chunker.get("sentence_processor") == RuleSentenceProcessor.name
-        or chunker.get("sentence_processor_version") == sentence_processor_version
+    artifact_processor_identity = (
+        chunker.get("sentence_processor"),
+        chunker.get("sentence_processor_version"),
+    )
+    requested_processor_identity = (
+        sentence_processor_name,
+        sentence_processor_version,
+    )
+    processor_identity_matches = (
+        artifact_processor_identity == requested_processor_identity
+        or (
+            requested_processor_identity == (SAT_PROCESSOR_NAME, SAT_PROCESSOR_VERSION)
+            and artifact_processor_identity in LEGACY_SAT_PROCESSOR_IDENTITIES
+        )
+        or (
+            sentence_processor_name == RuleSentenceProcessor.name
+            and chunker.get("sentence_processor") == RuleSentenceProcessor.name
+        )
     )
     return (
         artifact.get("schema_version") == CHUNK_SCHEMA_VERSION
@@ -516,8 +657,7 @@ def chunk_artifact_is_current(
         and chunker.get("name") == "corpusdock.anchor_sentence"
         and type(algorithm_version) is int
         and algorithm_version == CHUNK_ALGORITHM_VERSION
-        and chunker.get("sentence_processor") == sentence_processor_name
-        and processor_version_matches
+        and processor_identity_matches
         and chunker.get("sentence_model") == sentence_model
         and chunker.get("target_characters") == target_characters
         and chunker.get("max_characters") == max_characters
@@ -526,18 +666,27 @@ def chunk_artifact_is_current(
 
 
 def sentence_processor_identity(
-    name: str, *, model_name: str = DEFAULT_SENTENCE_MODEL
+    name: str,
+    *,
+    model_name: str = DEFAULT_SENTENCE_MODEL,
+    device: SentenceDevice = DEFAULT_SENTENCE_DEVICE,
 ) -> tuple[str, str, str]:
     """Return requested splitter provenance without loading its inference model."""
 
     if name == "rule":
+        if device != "cpu":
+            raise ChunkingError(
+                "sentence_device_invalid",
+                "The rule sentence processor runs on CPU; use --sentence-device cpu.",
+            )
         return RuleSentenceProcessor.name, RuleSentenceProcessor.version, "none"
     if name == "sat":
-        try:
-            processor_version = package_version("wtpsplit-lite")
-        except PackageNotFoundError:
-            processor_version = "unknown"
-        return SaTSentenceProcessor.name, processor_version, model_name
+        if not isinstance(device, str) or device not in {"cpu", "cuda"}:
+            raise ChunkingError(
+                "sentence_device_invalid",
+                "Sentence device must be 'cpu' or 'cuda'.",
+            )
+        return SAT_PROCESSOR_NAME, SAT_PROCESSOR_VERSION, model_name
     raise ChunkingError(
         "sentence_processor_unknown", f"Unknown sentence processor '{name}'."
     )
@@ -756,6 +905,9 @@ def _failed_chunk_artifact(
         sentence_processor_name=sentence_processor.name,
         sentence_processor_version=sentence_processor.version,
         sentence_model=sentence_processor.model_name,
+        sentence_device=sentence_processor.device,
+        sentence_backend_name=sentence_processor.backend_name,
+        sentence_backend_version=sentence_processor.backend_version,
         target_characters=target_characters,
         max_characters=max_characters,
         overlap_sentences=overlap_sentences,

@@ -51,6 +51,15 @@ HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 corpusdock ingest ./documents
 Use `--sentence-processor rule` for the dependency-free local fallback. It preserves
 offsets but is less capable on multilingual or irregular text.
 
+On NVIDIA systems, switch the mutually exclusive sentence runtime extra and request
+CUDA explicitly. CorpusDock fails instead of silently falling back when the CUDA
+execution provider is unavailable:
+
+```bash
+uv sync --extra local-models-cuda
+corpusdock sync ./documents --sentence-device cuda
+```
+
 ## Ingestion contract
 
 ```bash

@@ -8,6 +8,8 @@ import pytest
 from corpusdock.chunking import (
     CHUNK_ALGORITHM_VERSION,
     CHUNK_SCHEMA_VERSION,
+    SAT_PROCESSOR_NAME,
+    SAT_PROCESSOR_VERSION,
     ChunkingError,
     RuleSentenceProcessor,
     chunk_artifact_path_for,
@@ -15,6 +17,8 @@ from corpusdock.chunking import (
     chunk_coverage_report,
     chunk_extraction_artifact,
     load_chunk_artifact,
+    sentence_processor_from,
+    sentence_processor_identity,
     write_chunk_artifact,
 )
 from corpusdock.extraction import EXTRACTION_SCHEMA_VERSION
@@ -195,6 +199,8 @@ def test_chunk_artifact_write_load_and_coverage(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded["schema_version"] == CHUNK_SCHEMA_VERSION
     assert loaded["chunker"]["algorithm_version"] == CHUNK_ALGORITHM_VERSION
+    assert loaded["chunker"]["sentence_device"] == "cpu"
+    assert loaded["chunker"]["sentence_backend"] == "corpusdock"
     assert loaded["chunks"][0]["text"] == text
     assert report["statuses"]["complete"] == 1
     assert report["chunks"] == 1
@@ -248,3 +254,47 @@ def test_chunk_freshness_survives_unrelated_application_version_changes() -> Non
 
     payload["chunker"]["algorithm_version"] = CHUNK_ALGORITHM_VERSION + 1
     assert not chunk_artifact_is_current(payload, source, **settings)
+
+
+def test_sentence_processor_device_selection_is_explicit() -> None:
+    name, _version, model = sentence_processor_identity("sat", device="cuda")
+
+    assert name == SAT_PROCESSOR_NAME
+    assert _version == SAT_PROCESSOR_VERSION
+    assert model == "sat-12l-sm"
+    with pytest.raises(ChunkingError, match="runs on CPU"):
+        sentence_processor_from("rule", device="cuda")
+
+
+def test_legacy_sat_artifact_is_reusable_under_stable_processor_identity() -> None:
+    text = "Legacy SaT chunk."
+    artifact = chunk_extraction_artifact(
+        _extraction(text, [_anchor("line-1", 0, len(text))]),
+        RuleSentenceProcessor(),
+        now=lambda: TIMESTAMP,
+    )
+    source = SourceRecord(
+        source_id=SOURCE_ID,
+        sha256=SOURCE_SHA256,
+        source_format="txt",
+        size_bytes=len(text),
+        original_paths=("/local/source.txt",),
+        registered_at=TIMESTAMP,
+        registration_tool_version="0.1.0",
+    )
+    payload = artifact.to_dict()
+    payload["chunker"].update(
+        {
+            "sentence_processor": "wtpsplit-lite.SaT",
+            "sentence_processor_version": "0.2.0",
+            "sentence_model": "sat-12l-sm",
+        }
+    )
+
+    assert chunk_artifact_is_current(
+        payload,
+        source,
+        sentence_processor_name=SAT_PROCESSOR_NAME,
+        sentence_processor_version=SAT_PROCESSOR_VERSION,
+        sentence_model="sat-12l-sm",
+    )

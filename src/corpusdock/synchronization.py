@@ -20,6 +20,7 @@ from corpusdock.analysis_store import reconcile_analysis_database
 from corpusdock.chunking import (
     DEFAULT_MAX_CHARACTERS,
     DEFAULT_OVERLAP_SENTENCES,
+    DEFAULT_SENTENCE_DEVICE,
     DEFAULT_SENTENCE_MODEL,
     DEFAULT_TARGET_CHARACTERS,
     ChunkingError,
@@ -63,6 +64,7 @@ class PipelineConfig:
     input_root: str
     sentence_processor: str = "sat"
     sentence_model: str = DEFAULT_SENTENCE_MODEL
+    sentence_device: str = DEFAULT_SENTENCE_DEVICE
     target_characters: int = DEFAULT_TARGET_CHARACTERS
     max_characters: int = DEFAULT_MAX_CHARACTERS
     overlap_sentences: int = DEFAULT_OVERLAP_SENTENCES
@@ -75,6 +77,7 @@ class PipelineConfig:
             "chunking": {
                 "sentence_processor": self.sentence_processor,
                 "sentence_model": self.sentence_model,
+                "sentence_device": self.sentence_device,
                 "target_characters": self.target_characters,
                 "max_characters": self.max_characters,
                 "overlap_sentences": self.overlap_sentences,
@@ -97,6 +100,7 @@ class PipelineConfig:
             input_root=input_root,
             sentence_processor=_required_string(chunking, "sentence_processor"),
             sentence_model=_required_string(chunking, "sentence_model"),
+            sentence_device=chunking.get("sentence_device", DEFAULT_SENTENCE_DEVICE),
             target_characters=_required_integer(chunking, "target_characters"),
             max_characters=_required_integer(chunking, "max_characters"),
             overlap_sentences=_required_integer(chunking, "overlap_sentences"),
@@ -175,6 +179,7 @@ def configure_input_mirror(
     *,
     sentence_processor: str = "sat",
     sentence_model: str = DEFAULT_SENTENCE_MODEL,
+    sentence_device: str = DEFAULT_SENTENCE_DEVICE,
     target_characters: int = DEFAULT_TARGET_CHARACTERS,
     max_characters: int = DEFAULT_MAX_CHARACTERS,
     overlap_sentences: int = DEFAULT_OVERLAP_SENTENCES,
@@ -194,6 +199,7 @@ def configure_input_mirror(
         input_root=str(resolved),
         sentence_processor=sentence_processor,
         sentence_model=sentence_model,
+        sentence_device=sentence_device,
         target_characters=target_characters,
         max_characters=max_characters,
         overlap_sentences=overlap_sentences,
@@ -243,6 +249,7 @@ def synchronize_input_mirror(
     processor_name, processor_version, processor_model = sentence_processor_identity(
         config.sentence_processor,
         model_name=config.sentence_model,
+        device=config.sentence_device,
     )
     processor = None
     extracted = 0
@@ -298,6 +305,7 @@ def synchronize_input_mirror(
             processor = sentence_processor_from(
                 config.sentence_processor,
                 model_name=config.sentence_model,
+                device=config.sentence_device,
             )
         chunk_artifact = chunk_extraction_artifact(
             extraction,
@@ -354,6 +362,7 @@ def _validate_config(config: PipelineConfig) -> None:
     sentence_processor_identity(
         config.sentence_processor,
         model_name=config.sentence_model,
+        device=config.sentence_device,
     )
     if config.target_characters < 1 or config.max_characters < config.target_characters:
         raise ManifestError(

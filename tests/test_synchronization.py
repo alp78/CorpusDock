@@ -99,3 +99,14 @@ def test_empty_input_mirror_removes_all_registered_sources(tmp_path: Path) -> No
     assert emptied.indexed_chunks == 0
     assert ManifestStore(project).load().sources == {}
     assert index_status_report(project)["status"] == "ready"
+
+
+def test_pipeline_configuration_persists_sentence_device(tmp_path: Path) -> None:
+    mirror = tmp_path / "input"
+    mirror.mkdir()
+    project = tmp_path / "project"
+
+    config = configure_input_mirror(project, mirror, sentence_device="cuda")
+
+    assert config.sentence_device == "cuda"
+    assert load_pipeline_config(project) == config

@@ -37,6 +37,7 @@ from corpusdock.analysis_vllm import (
 from corpusdock.chunking import (
     DEFAULT_MAX_CHARACTERS,
     DEFAULT_OVERLAP_SENTENCES,
+    DEFAULT_SENTENCE_DEVICE,
     DEFAULT_SENTENCE_MODEL,
     DEFAULT_TARGET_CHARACTERS,
     ChunkingError,
@@ -325,6 +326,12 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Local SaT model name or directory (default: {DEFAULT_SENTENCE_MODEL}).",
     )
     ingest_parser.add_argument(
+        "--sentence-device",
+        choices=("cpu", "cuda"),
+        default=DEFAULT_SENTENCE_DEVICE,
+        help="Local SaT inference device (default: cpu).",
+    )
+    ingest_parser.add_argument(
         "--target-characters",
         type=int,
         default=DEFAULT_TARGET_CHARACTERS,
@@ -379,6 +386,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--sentence-model",
         default=DEFAULT_SENTENCE_MODEL,
         help=f"Local SaT model name or directory (default: {DEFAULT_SENTENCE_MODEL}).",
+    )
+    sync_parser.add_argument(
+        "--sentence-device",
+        choices=("cpu", "cuda"),
+        default=DEFAULT_SENTENCE_DEVICE,
+        help="Local SaT inference device (default: cpu).",
     )
     sync_parser.add_argument(
         "--target-characters",
@@ -800,6 +813,7 @@ def _sync_sources(args: argparse.Namespace) -> int:
         args.input,
         sentence_processor=args.sentence_processor,
         sentence_model=args.sentence_model,
+        sentence_device=args.sentence_device,
         target_characters=args.target_characters,
         max_characters=args.max_characters,
         overlap_sentences=args.overlap_sentences,
@@ -1292,6 +1306,7 @@ def _register_sources(args: argparse.Namespace) -> int:
         sentence_processor = sentence_processor_from(
             args.sentence_processor,
             model_name=args.sentence_model,
+            device=args.sentence_device,
         )
     store = ManifestStore(project_root)
     registrations = store.register(source_files)
@@ -1556,6 +1571,7 @@ def _synchronize_before_analysis(
             args.input,
             sentence_processor=settings.sentence_processor,
             sentence_model=settings.sentence_model,
+            sentence_device=settings.sentence_device,
             target_characters=settings.target_characters,
             max_characters=settings.max_characters,
             overlap_sentences=settings.overlap_sentences,
