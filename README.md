@@ -3,8 +3,9 @@
 **Citation-aware local document ingestion and retrieval for AI agents.**
 
 CorpusDock ingests local documents, preserves their source anchors, and returns exact
-full-text evidence that agents can cite and people can verify. It is designed to work with
-Codex, Claude Code, and ordinary shells without making any AI provider mandatory.
+full-text evidence that agents can cite and people can verify. Codex, Claude Code, and
+ordinary shells can invoke the same provider-neutral CLI. The reserved `mcp` subcommand
+is a scaffold and is not yet an operational adapter.
 
 ## Project status
 
@@ -30,8 +31,13 @@ package. DRM-protected MOBI files and unknown compression types fail explicitly.
 
 ## Install and ingest
 
+CorpusDock requires Python 3.11 or newer. The quick start below uses `uv` and activates
+the project environment so every subsequent `corpusdock` command resolves to this
+checkout:
+
 ```bash
 uv sync --extra local-models
+source .venv/bin/activate
 corpusdock init .
 corpusdock sync ./documents
 corpusdock doctor
